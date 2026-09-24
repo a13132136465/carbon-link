@@ -1,0 +1,55 @@
+services:
+  api:
+    build: .
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      DATABASE_URL: postgresql+psycopg://carbon:${POSTGRES_PASSWORD:-carbon-dev}@db:5432/carbon_link
+      JWT_SECRET: ${JWT_SECRET:-local-development-secret-change-this}
+      ACCESS_TOKEN_MINUTES: 30
+      CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:3000","http://localhost:8000"]}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-admin@example.com}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-ChangeMe123!}
+      BLOCKCHAIN_ENABLED: ${BLOCKCHAIN_ENABLED:-false}
+      BLOCKCHAIN_NAME: ${BLOCKCHAIN_NAME:-avalanche-fuji}
+      BLOCKCHAIN_RPC_URL: ${BLOCKCHAIN_RPC_URL:-https://api.avax-test.network/ext/bc/C/rpc}
+      BLOCKCHAIN_CHAIN_ID: ${BLOCKCHAIN_CHAIN_ID:-43113}
+      BLOCKCHAIN_CONFIRMATIONS: ${BLOCKCHAIN_CONFIRMATIONS:-3}
+      BLOCKCHAIN_REQUEST_TIMEOUT_SECONDS: ${BLOCKCHAIN_REQUEST_TIMEOUT_SECONDS:-30}
+      CARBON_PROJECT_CONTRACT_ADDRESS: ${CARBON_PROJECT_CONTRACT_ADDRESS:-}
+      CARBON_CREDIT_CONTRACT_ADDRESS: ${CARBON_CREDIT_CONTRACT_ADDRESS:-}
+      BLOCKCHAIN_OPERATOR_ADDRESS: ${BLOCKCHAIN_OPERATOR_ADDRESS:-}
+      BLOCKCHAIN_SIGNER_URL: ${BLOCKCHAIN_SIGNER_URL:-}
+      BLOCKCHAIN_OPERATOR_PRIVATE_KEY: ${BLOCKCHAIN_OPERATOR_PRIVATE_KEY:-}
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: carbon_link
+      POSTGRES_USER: carbon
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-carbon-dev}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U carbon -d carbon_link"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

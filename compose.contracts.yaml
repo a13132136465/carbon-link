@@ -1,0 +1,10 @@
+services:
+  contracts:
+    image: ghcr.io/foundry-rs/foundry:v1.7.1
+    entrypoint: forge
+    working_dir: /workspace/contracts
+    volumes:
+      - .:/workspace
+    command: test -vvv
+    profiles: ["tools"]
+

@@ -1,0 +1,24 @@
+[profile.default]
+src = "src"
+test = "test"
+script = "script"
+out = "out"
+libs = ["lib"]
+solc_version = "0.8.30"
+optimizer = true
+optimizer_runs = 10000
+evm_version = "cancun"
+bytecode_hash = "none"
+cbor_metadata = false
+
+[rpc_endpoints]
+fuji = "${AVALANCHE_FUJI_RPC_URL}"
+
+[fmt]
+line_length = 100
+tab_width = 4
+bracket_spacing = true
+
+[profile.ci]
+fuzz = { runs = 1000 }
+invariant = { runs = 256, depth = 32 }

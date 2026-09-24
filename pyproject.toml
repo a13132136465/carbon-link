@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "carbon-link"
+version = "1.0.0"
+description = "Production-oriented carbon credit registry, ledger and marketplace"
+requires-python = ">=3.12"
+dependencies = [
+  "alembic==1.16.5",
+  "email-validator==2.2.0",
+  "fastapi==0.116.1",
+  "psycopg[binary]==3.2.10",
+  "pydantic-settings==2.10.1",
+  "PyJWT==2.10.1",
+  "pwdlib[argon2]==0.2.1",
+  "sqlalchemy==2.0.43",
+  "uvicorn[standard]==0.35.0",
+]
+
+[project.optional-dependencies]
+test = ["httpx==0.28.1", "pytest==8.4.2", "pytest-cov==6.2.1"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
