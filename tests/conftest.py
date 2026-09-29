@@ -3,6 +3,8 @@ os.environ["DATABASE_URL"] = "sqlite:///./carbon_link_test.db"
 os.environ["JWT_SECRET"] = "test-secret-that-is-definitely-longer-than-32-characters"
 os.environ["BOOTSTRAP_ADMIN_EMAIL"] = "admin@example.com"
 os.environ["BOOTSTRAP_ADMIN_PASSWORD"] = "AdminPassword123!"
+os.environ["BLOCKCHAIN_ENABLED"] = "false"
+os.environ["ENVIRONMENT"] = "test"
 
 import pytest
 from fastapi.testclient import TestClient
@@ -15,4 +17,3 @@ def client():
     Base.metadata.create_all(engine)
     with TestClient(app) as test_client:
         yield test_client
-

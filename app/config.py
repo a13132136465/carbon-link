@@ -18,11 +18,26 @@ class Settings(BaseSettings):
     blockchain_name: str = "avalanche-fuji"
     blockchain_confirmations: int = 3
     blockchain_request_timeout_seconds: int = 30
+    blockchain_worker_poll_seconds: int = 5
+    blockchain_worker_max_attempts: int = 10
     carbon_project_contract_address: str | None = None
     carbon_credit_contract_address: str | None = None
     blockchain_operator_address: str | None = None
     blockchain_operator_private_key: str | None = None
     blockchain_signer_url: str | None = None
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_from: str | None = None
+    smtp_starttls: bool = True
+    frontend_url: str = "http://localhost:3000"
+    password_reset_minutes: int = 30
+    upload_dir: str = "./uploads"
+    max_upload_bytes: int = 20 * 1024 * 1024
+    llm_api_key: str | None = None
+    llm_base_url: str | None = None
+    llm_model: str = "gpt-4.1-mini"
 
     @field_validator("jwt_secret")
     @classmethod

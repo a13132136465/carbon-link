@@ -26,6 +26,7 @@ class UserOut(ORMModel):
     display_name: str
     role: Role
     is_active: bool
+    created_at: datetime
 
 class ProjectIn(BaseModel):
     name: str = Field(min_length=2, max_length=200)
@@ -34,6 +35,9 @@ class ProjectIn(BaseModel):
     methodology: str = Field(min_length=2, max_length=120)
     description: str = Field(default="", max_length=5000)
     estimated_tonnes: Decimal = Field(gt=0, max_digits=20, decimal_places=4)
+
+class ProjectUpdate(ProjectIn):
+    pass
 
 class ProjectOut(ORMModel):
     id: str
@@ -47,6 +51,48 @@ class ProjectOut(ORMModel):
     status: ProjectStatus
     review_note: str | None
     created_at: datetime
+
+class ProjectDocumentOut(ORMModel):
+    id: str
+    project_id: str
+    category: str
+    original_name: str
+    content_type: str
+    size_bytes: int
+    created_at: datetime
+
+class ApplicationReadinessOut(BaseModel):
+    ready: bool
+    completed_categories: list[str]
+    missing_categories: list[str]
+    completion_percent: int
+
+class AgentTurn(BaseModel):
+    role: str = Field(pattern="^(user|assistant)$")
+    content: str = Field(max_length=4000)
+
+class AgentDraft(BaseModel):
+    name: str | None = Field(default=None, max_length=200)
+    project_type: str | None = Field(default=None, max_length=80)
+    region: str | None = Field(default=None, max_length=120)
+    methodology: str | None = Field(default=None, max_length=120)
+    description: str | None = Field(default=None, max_length=5000)
+    estimated_tonnes: str | None = Field(default=None, max_length=40)
+
+class AgentMessageIn(BaseModel):
+    project_id: str | None = None
+    message: str = Field(min_length=1, max_length=4000)
+    history: list[AgentTurn] = Field(default_factory=list, max_length=30)
+    draft: AgentDraft = Field(default_factory=AgentDraft)
+
+class AgentMessageOut(BaseModel):
+    draft: AgentDraft | None = None
+    missing_fields: list[str] = Field(default_factory=list)
+    model_available: bool = False
+    reply: str
+    stage: str
+    suggested_actions: list[str]
+    readiness: ApplicationReadinessOut | None = None
 
 class ReviewIn(BaseModel):
     approved: bool
@@ -109,6 +155,16 @@ class TradeOut(ORMModel):
     currency: str
     traded_at: datetime
 
+class LedgerEntryOut(ORMModel):
+    id: str
+    batch_id: str
+    kind: str
+    quantity_delta: Decimal
+    balance_after: Decimal
+    reference_type: str
+    reference_id: str
+    created_at: datetime
+
 class RetireIn(BaseModel):
     batch_id: str
     quantity: Decimal = Field(gt=0, max_digits=20, decimal_places=4)
@@ -124,6 +180,15 @@ class RetirementOut(ORMModel):
     beneficiary: str
     reason: str
     retired_at: datetime
+
+class AuditEventOut(ORMModel):
+    id: str
+    actor_id: str | None
+    action: str
+    resource_type: str
+    resource_id: str
+    detail: str
+    created_at: datetime
 
 class DashboardOut(BaseModel):
     total_issued: Decimal
@@ -158,3 +223,26 @@ class ChainOperationOut(ORMModel):
     block_number: int | None
     error_message: str | None
     created_at: datetime
+
+class UserAdminUpdate(BaseModel):
+    display_name: str | None = Field(default=None, min_length=2, max_length=120)
+    role: Role | None = None
+    is_active: bool | None = None
+
+class ChangePasswordIn(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=10, max_length=128)
+
+class ForgotPasswordIn(BaseModel):
+    email: EmailStr
+
+class ForgotPasswordOut(BaseModel):
+    message: str
+    reset_token: str | None = None
+
+class ResetPasswordIn(BaseModel):
+    token: str = Field(min_length=20, max_length=256)
+    new_password: str = Field(min_length=10, max_length=128)
+
+class MessageOut(BaseModel):
+    message: str

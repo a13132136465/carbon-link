@@ -1,10 +1,10 @@
 # Ubuntu 部署指南
 
-本文采用混合部署：Solidity 合约在 Ubuntu 主机上使用原生 Foundry 编译、测试和部署；API 与 PostgreSQL 使用 Docker Compose。先部署到 Avalanche Fuji 测试网，确认业务及链上数据无误并完成独立安全审计后，才考虑主网。
+本文采用混合部署：Solidity 合约在 Ubuntu 主机上使用原生 Foundry 编译、测试和部署；React 前端、API 与 PostgreSQL 使用 Docker Compose。先部署到 Avalanche Fuji 测试网，确认业务及链上数据无误并完成独立安全审计后，才考虑主网。
 
 ## 1. 主机准备
 
-建议 Ubuntu 22.04/24.04 LTS，至少 2 vCPU、4 GB 内存和 30 GB 磁盘。仅对公网开放 SSH、HTTP 和 HTTPS。API 在 Compose 中绑定 `127.0.0.1:8000`，应通过 TLS 反向代理访问。
+建议 Ubuntu 22.04/24.04 LTS，至少 2 vCPU、4 GB 内存和 30 GB 磁盘。仅对公网开放 SSH、HTTP 和 HTTPS。管理端与 API 在 Compose 中分别绑定 `127.0.0.1:3000`、`127.0.0.1:8000`，应通过 TLS 反向代理访问。
 
 使用 Docker 官方 apt 仓库安装 Engine 和 Compose 插件：
 
@@ -205,6 +205,7 @@ nano .env
 ```dotenv
 ENVIRONMENT=production
 POSTGRES_PASSWORD=使用密码管理器生成的数据库密码
+POSTGRES_DB=carbon_link_v2
 JWT_SECRET=至少32字符的随机密钥
 BOOTSTRAP_ADMIN_EMAIL=你的管理员邮箱
 BOOTSTRAP_ADMIN_PASSWORD=强随机管理员密码
@@ -228,20 +229,23 @@ BLOCKCHAIN_OPERATOR_PRIVATE_KEY=0x后端操作账户私钥
 ```bash
 docker compose up -d --build
 docker compose ps
+curl --fail http://127.0.0.1:3000/health
 curl --fail http://127.0.0.1:8000/health/ready
 docker compose logs --tail=100 api
+docker compose logs --tail=100 chain-worker
 ```
 
 ## 9. TLS 与防火墙
 
-用 Nginx、Caddy 或云负载均衡器将 `https://你的域名` 反向代理到 `http://127.0.0.1:8000`。不要把 PostgreSQL 或 8000 端口直接暴露到公网。Docker 发布端口可能绕过部分 UFW 规则，因此 Compose 已限定 API 只能从本机访问。
+用宿主机 Nginx、Caddy 或云负载均衡器将 `https://你的域名` 反向代理到 `http://127.0.0.1:3000`。前端容器会把同域 `/api` 请求转发给 API 容器；不要把 PostgreSQL 或 8000 端口直接暴露到公网。Docker 发布端口可能绕过部分 UFW 规则，因此 Compose 已限定管理端与 API 只能从本机访问。
 
 ## 10. 备份与升级
 
 升级前先备份数据库：
 
 ```bash
-docker compose exec -T db pg_dump -U carbon -d carbon_link -Fc > "carbon_link_$(date +%F_%H%M).dump"
+docker compose exec -T db sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' \
+  > "carbon_link_$(date +%F_%H%M).dump"
 ```
 
 升级：
@@ -250,11 +254,12 @@ docker compose exec -T db pg_dump -U carbon -d carbon_link -Fc > "carbon_link_$(
 docker compose pull
 docker compose up -d --build
 docker compose logs --tail=100 api
+curl --fail http://127.0.0.1:3000/health
 curl --fail http://127.0.0.1:8000/health/ready
 ```
 
 数据库迁移由 API 启动命令中的 `alembic upgrade head` 自动执行。备份文件应复制到虚拟机之外并定期做恢复演练。
 
-## 当前限制
+## 链上 Worker 验收
 
-API 已将项目登记、积分发行和注销写入事务性 `chain_operations` Outbox，但自动签名、广播、确认数监听和失败重试 worker 尚未实现。启用区块链后任务会进入 Outbox，但不会自动发送。因此当前步骤可完成合约部署和平台部署；正式联动前仍需完成链上 worker。
+API 会将项目登记、额度签发和注销写入事务性 `chain_operations` Outbox，`chain-worker` 随 Compose 自动启动并负责签名、广播、确认数监听和失败退避重试。管理员可在控制台“链上存证”查看状态和交易哈希。上线前应确认操作账户具有项目合约 `REGISTRAR_ROLE`、额度合约 `ISSUER_ROLE`，并持有足够的原生代币支付 gas。生产环境优先配置 `BLOCKCHAIN_SIGNER_URL`，避免在 Compose 环境变量中保存私钥。

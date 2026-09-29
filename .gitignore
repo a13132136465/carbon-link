@@ -6,4 +6,9 @@ __pycache__/
 *.db
 .coverage
 htmlcov/
-
+carbon-link-front/node_modules/
+carbon-link-front/dist/
+carbon-link-front/*.tsbuildinfo
+carbon-link-front/vite.config.js
+carbon-link-front/vite.config.d.ts
+uploads/

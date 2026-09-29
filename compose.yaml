@@ -1,4 +1,22 @@
 services:
+  carbon-link-front:
+    build:
+      context: ./carbon-link-front
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-3000}:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+      - NET_BIND_SERVICE
   api:
     build: .
     environment:
@@ -15,13 +33,26 @@ services:
       BLOCKCHAIN_CHAIN_ID: ${BLOCKCHAIN_CHAIN_ID:-43113}
       BLOCKCHAIN_CONFIRMATIONS: ${BLOCKCHAIN_CONFIRMATIONS:-3}
       BLOCKCHAIN_REQUEST_TIMEOUT_SECONDS: ${BLOCKCHAIN_REQUEST_TIMEOUT_SECONDS:-30}
+      BLOCKCHAIN_WORKER_POLL_SECONDS: ${BLOCKCHAIN_WORKER_POLL_SECONDS:-5}
+      BLOCKCHAIN_WORKER_MAX_ATTEMPTS: ${BLOCKCHAIN_WORKER_MAX_ATTEMPTS:-10}
       CARBON_PROJECT_CONTRACT_ADDRESS: ${CARBON_PROJECT_CONTRACT_ADDRESS:-}
       CARBON_CREDIT_CONTRACT_ADDRESS: ${CARBON_CREDIT_CONTRACT_ADDRESS:-}
       BLOCKCHAIN_OPERATOR_ADDRESS: ${BLOCKCHAIN_OPERATOR_ADDRESS:-}
       BLOCKCHAIN_SIGNER_URL: ${BLOCKCHAIN_SIGNER_URL:-}
       BLOCKCHAIN_OPERATOR_PRIVATE_KEY: ${BLOCKCHAIN_OPERATOR_PRIVATE_KEY:-}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_MODEL: ${LLM_MODEL:-gpt-4.1-mini}
+      PASSWORD_RESET_MINUTES: ${PASSWORD_RESET_MINUTES:-30}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_STARTTLS: ${SMTP_STARTTLS:-true}
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:${API_PORT:-8000}:8000"
     depends_on:
       db:
         condition: service_healthy
@@ -32,6 +63,34 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+  chain-worker:
+    build: .
+    command: ["python", "-m", "app.chain_worker"]
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      DATABASE_URL: postgresql+psycopg://carbon:${POSTGRES_PASSWORD:-carbon-dev}@db:5432/carbon_link
+      JWT_SECRET: ${JWT_SECRET:-local-development-secret-change-this}
+      BLOCKCHAIN_ENABLED: ${BLOCKCHAIN_ENABLED:-false}
+      BLOCKCHAIN_NAME: ${BLOCKCHAIN_NAME:-avalanche-fuji}
+      BLOCKCHAIN_RPC_URL: ${BLOCKCHAIN_RPC_URL:-https://api.avax-test.network/ext/bc/C/rpc}
+      BLOCKCHAIN_CHAIN_ID: ${BLOCKCHAIN_CHAIN_ID:-43113}
+      BLOCKCHAIN_CONFIRMATIONS: ${BLOCKCHAIN_CONFIRMATIONS:-3}
+      BLOCKCHAIN_REQUEST_TIMEOUT_SECONDS: ${BLOCKCHAIN_REQUEST_TIMEOUT_SECONDS:-30}
+      BLOCKCHAIN_WORKER_POLL_SECONDS: ${BLOCKCHAIN_WORKER_POLL_SECONDS:-5}
+      BLOCKCHAIN_WORKER_MAX_ATTEMPTS: ${BLOCKCHAIN_WORKER_MAX_ATTEMPTS:-10}
+      CARBON_PROJECT_CONTRACT_ADDRESS: ${CARBON_PROJECT_CONTRACT_ADDRESS:-}
+      CARBON_CREDIT_CONTRACT_ADDRESS: ${CARBON_CREDIT_CONTRACT_ADDRESS:-}
+      BLOCKCHAIN_OPERATOR_ADDRESS: ${BLOCKCHAIN_OPERATOR_ADDRESS:-}
+      BLOCKCHAIN_SIGNER_URL: ${BLOCKCHAIN_SIGNER_URL:-}
+      BLOCKCHAIN_OPERATOR_PRIVATE_KEY: ${BLOCKCHAIN_OPERATOR_PRIVATE_KEY:-}
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
     security_opt:
       - no-new-privileges:true
     cap_drop:

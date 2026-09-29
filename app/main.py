@@ -22,7 +22,7 @@ async def lifespan(_: FastAPI):
     yield
 
 app = FastAPI(title="CarbonLink", version="1.0.0", description="碳积分登记、核证、交易与注销平台", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=False, allow_methods=["GET", "POST", "DELETE"], allow_headers=["Authorization", "Content-Type", "Idempotency-Key"])
+app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "X-File-Name"], expose_headers=["X-Total-Count"])
 app.include_router(router)
 
 @app.get("/health/live", tags=["health"])
@@ -32,4 +32,3 @@ def live(): return {"status": "ok"}
 def ready():
     with SessionLocal() as db: db.execute(text("SELECT 1"))
     return {"status": "ready"}
-

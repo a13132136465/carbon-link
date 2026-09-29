@@ -1,4 +1,6 @@
 from datetime import datetime, timedelta, timezone
+import hashlib
+import secrets
 import jwt
 from pwdlib import PasswordHash
 from app.config import settings
@@ -20,3 +22,9 @@ def create_access_token(user_id: str, role: str) -> str:
 def decode_access_token(token: str) -> dict:
     return jwt.decode(token, settings.jwt_secret, algorithms=[ALGORITHM], options={"require": ["sub", "exp", "iat"]})
 
+def create_reset_token() -> tuple[str, str]:
+    token = secrets.token_urlsafe(32)
+    return token, hashlib.sha256(token.encode()).hexdigest()
+
+def hash_reset_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()

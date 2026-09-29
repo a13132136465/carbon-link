@@ -4,3 +4,5 @@
 __pycache__
 .pytest_cache
 *.db
+carbon-link-front/node_modules
+carbon-link-front/dist
