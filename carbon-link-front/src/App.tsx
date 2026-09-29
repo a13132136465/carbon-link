@@ -5,7 +5,7 @@ import type { User } from './types'
 import { Icon } from './ui'
 import { AuditPage, BlockchainPage, DashboardPage, MarketPage, ProjectsPage, RetirementsPage, WalletPage } from './pages'
 import { AccountPage, UsersPage } from './account'
-import { ApplicationPage } from './application'
+import { EnterpriseModule } from './enterprise'
 import type { Retirement } from './types'
 import { date, fmt } from './ui'
 
@@ -43,15 +43,14 @@ function Login({ onLogin }: { onLogin:(token:string)=>Promise<void> }) {
 }
 
 const nav=[
-  ['/', 'dashboard','总览'],['/projects','project','碳项目'],['/wallet','wallet','我的资产'],['/market','market','交易市场'],['/retirements','retire','注销管理'],
+  ['/', 'dashboard','总览'],['/projects','project','申报管理'],['/wallet','wallet','资产台账'],['/market','market','交易管理'],['/retirements','retire','注销管理'],
 ] as const
 
-function Layout({user,onLogout,notify}:{user:User;onLogout:()=>void;notify:(m:string,t?:'success'|'error')=>void}) {
+function ManagementLayout({user,onLogout,notify}:{user:User;onLogout:()=>void;notify:(m:string,t?:'success'|'error')=>void}) {
   const [open,setOpen]=useState(false), location=useLocation()
-  const admin=user.role==='admin', privileged=admin||user.role==='verifier'
-  const title:Record<string,string>={'/':user.role==='member'?'企业申报中心':'运营总览','/apply':'企业申报中心','/projects':'碳项目','/wallet':'我的资产','/market':'交易市场','/retirements':'注销管理','/blockchain':'链上存证','/audit':'审计日志','/users':'用户管理','/account':'账号设置'}
-  const memberNav=[['/','spark','申报工作台'],['/wallet','wallet','我的资产'],['/market','market','交易市场'],['/retirements','retire','注销管理']] as const
-  const items=[...(user.role==='member'?memberNav:nav),...(admin?[['/users','audit','用户管理'],['/blockchain','chain','链上存证'],['/audit','audit','审计日志']] as const:[]),['/account','wallet','账号设置'] as const]
+  const admin=user.role==='admin'
+  const title:Record<string,string>={'/':'运营总览','/projects':'申报管理','/wallet':'资产台账','/market':'交易管理','/retirements':'注销管理','/blockchain':'链上存证','/audit':'审计日志','/users':'用户管理','/account':'账号设置'}
+  const items=[...nav,...(admin?[['/users','audit','用户管理'],['/blockchain','chain','链上存证'],['/audit','audit','审计日志']] as const:[]),['/account','wallet','账号设置'] as const]
   return <div className="app-shell">
     {open&&<div className="mobile-overlay" onClick={()=>setOpen(false)}/>}<aside className={`sidebar ${open?'open':''}`}>
       <div className="brand"><span className="brand-mark"><Icon name="leaf" size={22}/></span><span>CarbonLink</span></div>
@@ -60,7 +59,7 @@ function Layout({user,onLogout,notify}:{user:User;onLogout:()=>void;notify:(m:st
     </aside>
     <main className="workspace"><header className="topbar"><button className="menu-btn" onClick={()=>setOpen(true)}><Icon name="menu"/></button><div><span className="breadcrumb">CarbonLink / 管理控制台</span><h1>{title[location.pathname]||'管理控制台'}</h1></div><div className="top-actions"><span className="network"><i/>服务在线</span><div className="avatar small">{user.display_name.slice(0,1).toUpperCase()}</div></div></header>
       <div className="page"><Routes>
-        <Route path="/" element={user.role==='member'?<ApplicationPage user={user} notify={notify}/>:<DashboardPage user={user}/>}/><Route path="/apply" element={<ApplicationPage user={user} notify={notify}/>}/><Route path="/projects" element={<ProjectsPage user={user} notify={notify}/>}/><Route path="/wallet" element={<WalletPage notify={notify}/>}/><Route path="/market" element={<MarketPage user={user} notify={notify}/>}/><Route path="/retirements" element={<RetirementsPage notify={notify}/>}/>
+        <Route path="/" element={<DashboardPage user={user}/>}/><Route path="/projects" element={<ProjectsPage user={user} notify={notify}/>}/><Route path="/wallet" element={<WalletPage notify={notify}/>}/><Route path="/market" element={<MarketPage user={user} notify={notify}/>}/><Route path="/retirements" element={<RetirementsPage notify={notify}/>}/>
         <Route path="/users" element={admin?<UsersPage current={user} notify={notify}/>:<Navigate to="/"/>}/><Route path="/blockchain" element={admin?<BlockchainPage/>:<Navigate to="/"/>}/><Route path="/audit" element={admin?<AuditPage/>:<Navigate to="/"/>}/><Route path="/account" element={<AccountPage user={user} notify={notify}/>}/><Route path="*" element={<Navigate to="/"/>}/>
       </Routes></div>
     </main>
@@ -79,5 +78,5 @@ export default function App(){
   const logout=()=>{localStorage.removeItem('carbonlink_token');setUser(null)}
   const notify=(message:string,type:'success'|'error'='success')=>{const id=Date.now();setNotices(n=>[...n,{id,message,type}]);setTimeout(()=>setNotices(n=>n.filter(x=>x.id!==id)),3500)}
   if(loading)return <div className="splash"><span className="brand-mark"><Icon name="leaf"/></span><span>CarbonLink</span></div>
-  return <><Routes><Route path="/verify" element={<CertificateVerify/>}/><Route path="/reset-password" element={<ResetPassword/>}/><Route path="*" element={user?<Layout user={user} onLogout={logout} notify={notify}/>:<Login onLogin={login}/>}/></Routes><div className="toast-stack">{notices.map(n=><div className={`toast ${n.type}`} key={n.id}><Icon name={n.type==='success'?'check':'close'} size={18}/>{n.message}</div>)}</div></>
+  return <><Routes><Route path="/verify" element={<CertificateVerify/>}/><Route path="/reset-password" element={<ResetPassword/>}/><Route path="*" element={user?(user.role==='member'?<EnterpriseModule user={user} onLogout={logout} notify={notify}/>:<ManagementLayout user={user} onLogout={logout} notify={notify}/>):<Login onLogin={login}/>}/></Routes><div className="toast-stack">{notices.map(n=><div className={`toast ${n.type}`} key={n.id}><Icon name={n.type==='success'?'check':'close'} size={18}/>{n.message}</div>)}</div></>
 }
