@@ -1,15 +1,14 @@
 # CarbonLink 碳积分管理与交易平台
 
-CarbonLink 是从 `carbin-ai` 教学原型演进而来的可部署业务系统，覆盖碳项目登记、核证、积分发行、托管余额、市场交易、注销与公开证书。系统以数据库不可变流水为事实依据，链上存证可作为后续适配器接入，而不会阻塞核心业务。
+CarbonLink 是从 `carbin-ai` 教学原型演进而来的自托管碳资产系统，覆盖碳项目申报与审核、链上项目登记、额度发行、去中心化交易、持有人签名注销与公开证书。平台负责材料和审批，用户通过自己的 EVM 钱包持有并处分资产；链上状态是资产余额与交易结算的事实来源。
 
 ## 已实现能力
 
 - JWT 登录、Argon2 密码哈希、管理员/核证员/成员三级权限。
 - 碳项目申报、提交、核证通过或驳回，以及完整审计事件。
-- 按项目与年份发行唯一碳积分批次，数据库约束防止超发和负余额。
-- 钱包可用余额与挂单锁定余额分离；成交在一个数据库事务中同步更新买卖双方、挂单、交易和双向流水。
-- 市场限价挂单、部分成交、撤单、交易统计。
-- 融合 Mini-DEX 价格—时间优先撮合、价格保护、FOK/IOC 买入、累计卖盘与真实成交行情，按碳批次和币种隔离市场。
+- 用户使用签名挑战绑定自托管 EVM 地址，平台不生成或保存用户私钥。
+- 项目核证后，项目 NFT 和 ERC-1155 碳额度直接登记或发行到项目方钱包。
+- 去中心化市场支持用户签名授权、挂单、部分购买和撤单；碳额度与网络原生代币在同一笔交易中原子结算。
 - 永久注销与公开查询的唯一注销证书。
 - 关键发行、购买和注销接口要求 `Idempotency-Key`，防止客户端重试造成重复处理。
 - PostgreSQL、Alembic 迁移、健康检查、非 root 容器、Docker Compose 和端到端测试。
@@ -40,6 +39,8 @@ python -m venv .venv
 
 数据库结构由 `alembic upgrade head` 创建。生产启动命令已自动执行迁移。
 
+从旧托管版本升级时，先让所有资产用户完成钱包绑定并撤销旧数据库挂单，再运行 `python -m app.self_custody_migration` 做只读预检；确认输出后运行 `python -m app.self_custody_migration --execute`。该命令只写入可重试的 Outbox，由现有签名 Worker 把旧平台总钱包中的项目 NFT 和额度逐项转给用户钱包。
+
 也可完全在 Docker 中运行测试：
 
 ```text
@@ -49,9 +50,7 @@ docker run --rm carbon-link-test
 
 ## 业务边界
 
-碳额度交易市场的融合范围、撮合规则、接口与验证方式见 [Mini-DEX 融合说明](docs/mini-dex-integration.md)。新版 `/market` 提供交易预览、自动跨卖单成交、个人委托与资产工作台；不需要单独部署 Mini-DEX 服务。
-
-当前交易表示碳积分的原子交割和应付金额记录，不直接划转法币。接入支付机构时应采用“支付授权—积分交割—支付捕获”的 Saga，并通过支付回调幂等确认。链上模块建议采用异步 Outbox 写入交易哈希，数据库仍保留业务状态与审计事实，避免 RPC 故障破坏交易一致性。
+平台数据库保存身份、材料、审批和可检索的证书数据，不再作为资产余额或成交结算的权威账本。市场合约托管卖方主动挂出的数量；买方交易同时完成 ERC-1155 交割和网络原生代币付款。当前合约不处理法币或稳定币，若需要稳定计价，应另行接入经过审计的 ERC-20 结算资产。
 
 ## 区块链配置
 
@@ -59,22 +58,24 @@ docker run --rm carbon-link-test
 
 - `BLOCKCHAIN_ENABLED`：是否启用 EVM 链上适配器。
 - `BLOCKCHAIN_RPC_URL`、`BLOCKCHAIN_CHAIN_ID`、`BLOCKCHAIN_NAME`：网络连接信息，默认网络参数为 Avalanche Fuji（43113）。
-- `CARBON_PROJECT_CONTRACT_ADDRESS`、`CARBON_CREDIT_CONTRACT_ADDRESS`：项目 NFT 和碳积分合约地址。
+- `CARBON_PROJECT_CONTRACT_ADDRESS`、`CARBON_CREDIT_CONTRACT_ADDRESS`、`CARBON_MARKETPLACE_CONTRACT_ADDRESS`：项目 NFT、碳积分和去中心化市场合约地址。
 - `BLOCKCHAIN_OPERATOR_ADDRESS`：链上操作账户。
 - `BLOCKCHAIN_SIGNER_URL`：推荐的生产签名服务地址；或者在本地测试中使用 `BLOCKCHAIN_OPERATOR_PRIVATE_KEY`，两者至少配置一个。
 - `BLOCKCHAIN_CONFIRMATIONS`、`BLOCKCHAIN_REQUEST_TIMEOUT_SECONDS`：确认数与 RPC 超时。
 
 当 `BLOCKCHAIN_ENABLED=true` 时，应用启动阶段会检查必需配置，缺失时直接拒绝启动。管理员可通过 `GET /api/v1/system/blockchain` 查看脱敏后的生效配置和签名模式；接口永远不会返回私钥。
 
-项目核证通过、积分发行和积分注销会与业务数据在同一个数据库事务中写入 `chain_operations` Outbox。管理员可通过 `GET /api/v1/system/blockchain/operations` 查看待提交、已提交、已确认或失败的链上任务。链上执行器可以安全重试这些任务，而不会重复修改用户余额。
+项目核证通过和积分发行会写入 `chain_operations` Outbox，由具备最小 Registrar/Issuer 权限的平台操作账户执行；接收方始终是项目方已验证的钱包。挂单、购买、撤单和注销则只能由用户钱包签名，平台没有代签路径。
 
-`chain-worker` 服务会消费异步 Outbox，自动调用已部署合约并回填交易哈希和区块号。数据库账本仍是交易事实源，避免 RPC 中断导致余额或成交状态不一致；不应把私钥提交到仓库，生产环境优先使用 Vault/KMS 或独立签名服务。链上额度采用 4 位精度基础单位，即 `1 tCO₂e = 10,000` 个合约单位。
+`chain-worker` 服务消费审批与发行 Outbox，并回填交易哈希、区块号及链上 token ID。用户余额从合约读取；注销证书只在服务端核验成功回执、签名地址、批次、数量与受益方哈希后生成。链上额度采用 4 位精度基础单位，即 `1 tCO₂e = 10,000` 个合约单位。
 
 生产化 Solidity 合约位于 `contracts/`：
 
 - `CarbonProjectRegistry.sol`：ERC-721 项目登记、状态管理、元数据承诺和紧急暂停。
 - `CarbonCreditLedger.sol`：ERC-1155 批次发行、转移、冻结和永久注销。
+- `CarbonMarketplace.sol`：用户签名挂单、合约托管和原生代币原子结算。
 - `DeployCarbonLink.s.sol`：角色分离的部署脚本。
+- `DeployMarketplace.s.sol`：为已有项目/额度合约单独部署市场的滚动升级脚本。
 - `CarbonLink.t.sol`：权限、安全状态、发行、转移、注销及模糊测试。
 
 运行合约测试：`docker compose -f compose.contracts.yaml --profile tools run --rm contracts`。
@@ -84,8 +85,9 @@ docker run --rm carbon-link-test
 - `POST /api/v1/auth/register`、`POST /api/v1/auth/login`
 - `POST /api/v1/projects`、`POST /api/v1/projects/{id}/submit`、`POST /api/v1/projects/{id}/review`
 - `POST /api/v1/credits/issue`、`GET /api/v1/wallet/holdings`
-- `POST /api/v1/market/listings`、`POST /api/v1/market/listings/{id}/buy`、`DELETE /api/v1/market/listings/{id}`
-- `POST /api/v1/retirements`、`GET /api/v1/retirements/{certificate_no}`
+- `POST /api/v1/wallet/challenge`、`POST /api/v1/wallet/link`、`GET /api/v1/chain/config`
+- 市场写操作直接调用 `CarbonMarketplace` 合约；中心化成交接口在链上模式下返回 `410`
+- `POST /api/v1/retirements/confirm`、`GET /api/v1/retirements/{certificate_no}`
 - `GET /api/v1/dashboard`
 
 完整请求模型和响应示例以 OpenAPI 页面为准。

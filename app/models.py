@@ -42,6 +42,9 @@ class User(Base):
     display_name: Mapped[str] = mapped_column(String(120))
     role: Mapped[Role] = mapped_column(Enum(Role), default=Role.MEMBER, index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    wallet_address: Mapped[str | None] = mapped_column(String(42), unique=True, index=True)
+    wallet_nonce: Mapped[str | None] = mapped_column(String(64))
+    wallet_nonce_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 class PasswordResetToken(Base):
@@ -69,6 +72,7 @@ class Project(Base):
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+    chain_token_id: Mapped[int | None] = mapped_column(Integer, unique=True)
 
 class ProjectDocument(Base):
     __tablename__ = "project_documents"
@@ -95,6 +99,7 @@ class CreditBatch(Base):
     total_retired: Mapped[Decimal] = mapped_column(Numeric(20, 4), default=0)
     issued_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
     issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    chain_batch_id: Mapped[int | None] = mapped_column(Integer, unique=True)
 
 class Holding(Base):
     __tablename__ = "holdings"
@@ -164,6 +169,8 @@ class Retirement(Base):
     beneficiary: Mapped[str] = mapped_column(String(200))
     reason: Mapped[str] = mapped_column(Text)
     retired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    transaction_hash: Mapped[str | None] = mapped_column(String(80), unique=True)
+    chain_retirement_id: Mapped[int | None] = mapped_column(Integer, unique=True)
 
 class AuditEvent(Base):
     __tablename__ = "audit_events"

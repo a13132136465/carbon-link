@@ -120,9 +120,12 @@ REGISTRY=$(jq -r '.transactions[] | select(.contractName == "CarbonProjectRegist
   broadcast/DeployCarbonLink.s.sol/31337/run-latest.json)
 CREDITS=$(jq -r '.transactions[] | select(.contractName == "CarbonCreditLedger") | .contractAddress' \
   broadcast/DeployCarbonLink.s.sol/31337/run-latest.json)
+MARKETPLACE=$(jq -r '.transactions[] | select(.contractName == "CarbonMarketplace") | .contractAddress' \
+  broadcast/DeployCarbonLink.s.sol/31337/run-latest.json)
 
 cast code "$REGISTRY" --rpc-url http://127.0.0.1:8545
 cast code "$CREDITS" --rpc-url http://127.0.0.1:8545
+cast code "$MARKETPLACE" --rpc-url http://127.0.0.1:8545
 cast call "$CREDITS" "projectRegistry()(address)" \
   --rpc-url http://127.0.0.1:8545
 ```
@@ -180,12 +183,14 @@ forge script script/DeployCarbonLink.s.sol:DeployCarbonLink \
 broadcast/DeployCarbonLink.s.sol/43113/run-latest.json
 ```
 
-提取两个地址：
+提取三个地址：
 
 ```bash
 jq -r '.transactions[] | select(.contractName == "CarbonProjectRegistry") | .contractAddress' \
   broadcast/DeployCarbonLink.s.sol/43113/run-latest.json
 jq -r '.transactions[] | select(.contractName == "CarbonCreditLedger") | .contractAddress' \
+  broadcast/DeployCarbonLink.s.sol/43113/run-latest.json
+jq -r '.transactions[] | select(.contractName == "CarbonMarketplace") | .contractAddress' \
   broadcast/DeployCarbonLink.s.sol/43113/run-latest.json
 ```
 
@@ -218,6 +223,7 @@ BLOCKCHAIN_CHAIN_ID=43113
 BLOCKCHAIN_CONFIRMATIONS=3
 CARBON_PROJECT_CONTRACT_ADDRESS=0x项目合约地址
 CARBON_CREDIT_CONTRACT_ADDRESS=0x积分合约地址
+CARBON_MARKETPLACE_CONTRACT_ADDRESS=0x市场合约地址
 BLOCKCHAIN_OPERATOR_ADDRESS=0x后端操作账户
 BLOCKCHAIN_OPERATOR_PRIVATE_KEY=0x后端操作账户私钥
 ```

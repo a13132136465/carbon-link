@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import logging
 from pathlib import Path
+import secrets
 from urllib.parse import unquote
 from uuid import uuid4
 from fastapi import APIRouter, Depends, Header, Query, Request, Response
@@ -9,13 +10,15 @@ from fastapi.responses import FileResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from eth_account.messages import encode_defunct
+from web3 import HTTPProvider, Web3
 from app.config import settings
 from app.market_service import lock_batch, settle
 from app.database import get_db
 from app.deps import current_user, require_roles
 from app.models import AuditEvent, ChainOperation, CreditBatch, Holding, LedgerEntry, LedgerKind, Listing, ListingStatus, PasswordResetToken, Project, ProjectDocument, ProjectStatus, Retirement, Role, Trade, User
 from app.notifications import send_password_reset
-from app.schemas import AgentMessageIn, AgentMessageOut, ApplicationReadinessOut, AuditEventOut, BatchOut, BlockchainConfigOut, BuyIn, ChainOperationOut, ChangePasswordIn, DashboardOut, ForgotPasswordIn, ForgotPasswordOut, HoldingOut, IssueIn, LedgerEntryOut, ListingIn, ListingOut, LoginIn, MessageOut, ProjectDocumentOut, ProjectIn, ProjectOut, ProjectUpdate, RegisterIn, ResetPasswordIn, RetireIn, RetirementOut, ReviewIn, TokenOut, TradeOut, UserAdminUpdate, UserOut
+from app.schemas import AgentMessageIn, AgentMessageOut, ApplicationReadinessOut, AuditEventOut, BatchOut, BlockchainConfigOut, BuyIn, ChainConfigOut, ChainOperationOut, ChangePasswordIn, DashboardOut, ForgotPasswordIn, ForgotPasswordOut, HoldingOut, IssueIn, LedgerEntryOut, ListingIn, ListingOut, LoginIn, MessageOut, ProjectDocumentOut, ProjectIn, ProjectOut, ProjectUpdate, RegisterIn, ResetPasswordIn, RetireIn, RetirementConfirmIn, RetirementOut, ReviewIn, TokenOut, TradeOut, UserAdminUpdate, UserOut, WalletChallengeIn, WalletChallengeOut, WalletLinkIn
 from app.application_agent import REQUIRED_DOCUMENTS, run_application_agent
 from app.security import create_access_token, create_reset_token, hash_password, hash_reset_token, verify_password
 from app.service import add_ledger, audit, fail, locked_holding, queue_chain_operation, reserve_operation
@@ -30,6 +33,12 @@ ALLOWED_UPLOAD_TYPES = {
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "image/jpeg", "image/png",
 }
+SCALE = Decimal("10000")
+CREDIT_READ_ABI = [
+    {"type":"function","name":"balanceOf","stateMutability":"view","inputs":[{"name":"account","type":"address"},{"name":"id","type":"uint256"}],"outputs":[{"name":"","type":"uint256"}]},
+    {"type":"event","name":"CreditRetired","anonymous":False,"inputs":[{"name":"retirementId","type":"uint256","indexed":True},{"name":"batchId","type":"uint256","indexed":True},{"name":"account","type":"address","indexed":True},{"name":"amount","type":"uint256","indexed":False},{"name":"beneficiaryHash","type":"bytes32","indexed":False},{"name":"evidenceDigest","type":"bytes32","indexed":False}]},
+]
+MARKET_READ_ABI = [{"type":"function","name":"lockedBalance","stateMutability":"view","inputs":[{"name":"seller","type":"address"},{"name":"tokenId","type":"uint256"}],"outputs":[{"name":"","type":"uint256"}]}]
 
 def total_header(response: Response, total: int) -> None:
     response.headers["X-Total-Count"] = str(total)
@@ -105,6 +114,56 @@ def reset_password(body: ResetPasswordIn, db: Session = Depends(get_db)):
 
 @router.get("/users/me", response_model=UserOut)
 def me(user: User = Depends(current_user)): return user
+
+@router.post("/wallet/challenge", response_model=WalletChallengeOut)
+def wallet_challenge(body: WalletChallengeIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    try:
+        address = Web3.to_checksum_address(body.address)
+    except ValueError:
+        fail(422, "Invalid EVM wallet address")
+    nonce = secrets.token_hex(16)
+    expires = datetime.now(timezone.utc) + timedelta(minutes=5)
+    user.wallet_nonce = nonce
+    user.wallet_nonce_expires_at = expires
+    db.commit()
+    message = f"CarbonLink wallet verification\nAccount: {user.id}\nAddress: {address}\nNonce: {nonce}\nExpires: {expires.isoformat()}"
+    return WalletChallengeOut(address=address, message=message, expires_at=expires)
+
+@router.post("/wallet/link", response_model=UserOut)
+def link_wallet(body: WalletLinkIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if not user.wallet_nonce or not user.wallet_nonce_expires_at:
+        fail(409, "Request a wallet challenge first")
+    expires = user.wallet_nonce_expires_at
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    if expires <= datetime.now(timezone.utc):
+        fail(409, "Wallet challenge has expired")
+    try:
+        address = Web3.to_checksum_address(body.address)
+        message = f"CarbonLink wallet verification\nAccount: {user.id}\nAddress: {address}\nNonce: {user.wallet_nonce}\nExpires: {expires.isoformat()}"
+        recovered = Web3.to_checksum_address(Web3().eth.account.recover_message(encode_defunct(text=message), signature=body.signature))
+    except (ValueError, TypeError):
+        fail(422, "Invalid wallet signature")
+    if recovered != address:
+        fail(403, "Signature does not belong to this wallet")
+    if user.wallet_address and Web3.to_checksum_address(user.wallet_address) != address:
+        fail(409, "A linked wallet cannot be replaced automatically; transfer assets first and use the governed recovery process")
+    owner = db.scalar(select(User).where(User.wallet_address == address, User.id != user.id))
+    if owner:
+        fail(409, "This wallet is already linked to another account")
+    user.wallet_address = address
+    user.wallet_nonce = None
+    user.wallet_nonce_expires_at = None
+    audit(db, user.id, "wallet.linked", "user", user.id, {"address": address})
+    db.commit(); db.refresh(user)
+    return user
+
+@router.get("/chain/config", response_model=ChainConfigOut)
+def user_chain_config(_: User = Depends(current_user)):
+    return ChainConfigOut(enabled=settings.blockchain_enabled, network=settings.blockchain_name,
+        chain_id=settings.blockchain_chain_id, confirmations=settings.blockchain_confirmations, rpc_url=settings.blockchain_rpc_url,
+        credit_contract_address=settings.carbon_credit_contract_address,
+        marketplace_contract_address=settings.carbon_marketplace_contract_address)
 
 @router.post("/users/me/password", response_model=MessageOut)
 def change_password(body: ChangePasswordIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
@@ -279,7 +338,10 @@ def review_project(project_id: str, body: ReviewIn, user: User = Depends(require
     project.review_note = body.note; project.reviewed_by = user.id; project.reviewed_at = datetime.now(timezone.utc)
     audit(db, user.id, "project.reviewed", "project", project.id, {"approved": body.approved})
     if body.approved:
-        queue_chain_operation(db, "project.register", "project", project.id, settings.carbon_project_contract_address, {"project_id": project.id, "owner_id": project.owner_id, "name": project.name, "methodology": project.methodology, "region": project.region})
+        owner = db.get(User, project.owner_id)
+        if settings.blockchain_enabled and not owner.wallet_address:
+            fail(409, "Project owner must link a wallet before approval")
+        queue_chain_operation(db, "project.register", "project", project.id, settings.carbon_project_contract_address, {"project_id": project.id, "owner_id": project.owner_id, "owner_wallet": owner.wallet_address, "name": project.name, "methodology": project.methodology, "region": project.region})
     db.commit(); db.refresh(project)
     return project
 
@@ -295,9 +357,13 @@ def issue(body: IssueIn, idempotency_key: str = Header(alias="Idempotency-Key"),
         db.flush()
     except IntegrityError:
         db.rollback(); fail(409, "A batch already exists for this project and vintage")
-    holding = locked_holding(db, project.owner_id, batch.id, create=True); holding.quantity += body.quantity
-    add_ledger(db, holding, LedgerKind.ISSUE, body.quantity, "batch", batch.id)
-    queue_chain_operation(db, "credit.issue", "batch", batch.id, settings.carbon_credit_contract_address, {"batch_id": batch.id, "project_id": project.id, "vintage": body.vintage, "quantity": str(body.quantity), "serial_prefix": batch.serial_prefix})
+    owner = db.get(User, project.owner_id)
+    if settings.blockchain_enabled and not owner.wallet_address:
+        fail(409, "Project owner must link a wallet before issuance")
+    if not settings.blockchain_enabled:
+        holding = locked_holding(db, project.owner_id, batch.id, create=True); holding.quantity += body.quantity
+        add_ledger(db, holding, LedgerKind.ISSUE, body.quantity, "batch", batch.id)
+    queue_chain_operation(db, "credit.issue", "batch", batch.id, settings.carbon_credit_contract_address, {"batch_id": batch.id, "project_id": project.id, "recipient": owner.wallet_address, "vintage": body.vintage, "quantity": str(body.quantity), "serial_prefix": batch.serial_prefix})
     audit(db, user.id, "credits.issued", "batch", batch.id, {"quantity": str(body.quantity)}); db.commit(); db.refresh(batch)
     return batch
 
@@ -308,6 +374,19 @@ def batches(response: Response, offset: int = Query(0, ge=0), limit: int = Query
 
 @router.get("/wallet/holdings", response_model=list[HoldingOut])
 def holdings(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if settings.blockchain_enabled:
+        if not user.wallet_address:
+            return []
+        w3 = Web3(HTTPProvider(settings.blockchain_rpc_url, request_kwargs={"timeout": settings.blockchain_request_timeout_seconds}))
+        credits = w3.eth.contract(address=Web3.to_checksum_address(settings.carbon_credit_contract_address), abi=CREDIT_READ_ABI)
+        market = w3.eth.contract(address=Web3.to_checksum_address(settings.carbon_marketplace_contract_address), abi=MARKET_READ_ABI) if settings.carbon_marketplace_contract_address else None
+        result = []
+        for batch in db.scalars(select(CreditBatch).where(CreditBatch.chain_batch_id.is_not(None)).order_by(CreditBatch.issued_at.desc())):
+            available = Decimal(credits.functions.balanceOf(user.wallet_address, batch.chain_batch_id).call()) / SCALE
+            locked = Decimal(market.functions.lockedBalance(user.wallet_address, batch.chain_batch_id).call()) / SCALE if market else Decimal(0)
+            if available or locked:
+                result.append({"batch_id": batch.id, "quantity": available + locked, "locked_quantity": locked})
+        return result
     return list(db.scalars(select(Holding).where(Holding.user_id == user.id).order_by(Holding.batch_id)))
 
 @router.get("/wallet/ledger", response_model=list[LedgerEntryOut])
@@ -317,6 +396,7 @@ def ledger(response: Response, offset: int = Query(0, ge=0), limit: int = Query(
 
 @router.post("/market/listings", response_model=ListingOut, status_code=201)
 def create_listing(body: ListingIn, user: User = Depends(current_user), db: Session = Depends(get_db), idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")):
+    if settings.blockchain_enabled: fail(410, "Centralized listings are disabled; sign a marketplace contract transaction")
     if idempotency_key is not None:
         reserve_operation(db, user.id, "listing.create", idempotency_key)
     lock_batch(db, body.batch_id)
@@ -336,6 +416,7 @@ def list_market(response: Response, batch_id: str | None = None, offset: int = Q
 
 @router.post("/market/listings/{listing_id}/buy", response_model=TradeOut, status_code=201)
 def buy(listing_id: str, body: BuyIn, idempotency_key: str = Header(alias="Idempotency-Key"), user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if settings.blockchain_enabled: fail(410, "Centralized settlement is disabled; sign a marketplace contract transaction")
     reserve_operation(db, user.id, f"listing.buy:{listing_id}", idempotency_key)
     existing = db.get(Listing, listing_id)
     if not existing: fail(404, "Listing not found")
@@ -370,6 +451,8 @@ def cancel_listing(listing_id: str, user: User = Depends(current_user), db: Sess
 
 @router.post("/retirements", response_model=RetirementOut, status_code=201)
 def retire(body: RetireIn, idempotency_key: str = Header(alias="Idempotency-Key"), user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if settings.blockchain_enabled:
+        fail(409, "Sign the retirement transaction with the linked wallet and submit its transaction hash")
     reserve_operation(db, user.id, "credits.retire", idempotency_key)
     batch = lock_batch(db, body.batch_id)
     holding = locked_holding(db, user.id, body.batch_id)
@@ -379,6 +462,56 @@ def retire(body: RetireIn, idempotency_key: str = Header(alias="Idempotency-Key"
     db.add(record); db.flush(); add_ledger(db, holding, LedgerKind.RETIRE, -body.quantity, "retirement", record.id)
     queue_chain_operation(db, "credit.retire", "retirement", record.id, settings.carbon_credit_contract_address, {"retirement_id": record.id, "batch_id": body.batch_id, "quantity": str(body.quantity), "beneficiary": body.beneficiary, "reason": body.reason})
     audit(db, user.id, "credits.retired", "retirement", record.id); db.commit(); db.refresh(record)
+    return record
+
+@router.post("/retirements/confirm", response_model=RetirementOut, status_code=201)
+def confirm_retirement(body: RetirementConfirmIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if not settings.blockchain_enabled or not user.wallet_address:
+        fail(409, "A linked wallet and blockchain mode are required")
+    tx_hash = body.transaction_hash.lower()
+    existing = db.scalar(select(Retirement).where(Retirement.transaction_hash == tx_hash))
+    if existing:
+        if existing.user_id != user.id: fail(409, "Transaction already claimed")
+        return existing
+    batch = db.get(CreditBatch, body.batch_id)
+    if not batch or batch.chain_batch_id is None: fail(404, "On-chain carbon batch not found")
+    w3 = Web3(HTTPProvider(settings.blockchain_rpc_url, request_kwargs={"timeout": settings.blockchain_request_timeout_seconds}))
+    try:
+        receipt = w3.eth.get_transaction_receipt(tx_hash)
+        transaction = w3.eth.get_transaction(tx_hash)
+    except Exception:
+        fail(409, "Transaction is not confirmed on the configured chain")
+    if receipt.status != 1 or Web3.to_checksum_address(transaction["from"]) != Web3.to_checksum_address(user.wallet_address):
+        fail(403, "Transaction was not signed by the linked wallet")
+    confirmations = w3.eth.block_number - receipt.blockNumber + 1
+    if confirmations < settings.blockchain_confirmations:
+        fail(409, f"Transaction has {confirmations} confirmation(s); {settings.blockchain_confirmations} required")
+    if Web3.to_checksum_address(transaction["to"]) != Web3.to_checksum_address(settings.carbon_credit_contract_address):
+        fail(422, "Transaction did not call the CarbonLink credit contract")
+    contract = w3.eth.contract(address=Web3.to_checksum_address(settings.carbon_credit_contract_address), abi=CREDIT_READ_ABI)
+    events = contract.events.CreditRetired().process_receipt(receipt)
+    expected_amount = int(body.quantity * SCALE)
+    match = next((event for event in events if event.args.batchId == batch.chain_batch_id and event.args.amount == expected_amount
+        and Web3.to_checksum_address(event.args.account) == Web3.to_checksum_address(user.wallet_address)
+        and event.args.beneficiaryHash == Web3.keccak(text=body.beneficiary)), None)
+    if not match: fail(422, "Transaction retirement data does not match the request")
+    batch = db.scalar(select(CreditBatch).where(CreditBatch.id == body.batch_id).with_for_update().execution_options(populate_existing=True))
+    record = Retirement(certificate_no=f"CLR-{datetime.now(timezone.utc):%Y%m%d}-{uuid4().hex[:12].upper()}",
+        user_id=user.id, batch_id=batch.id, quantity=body.quantity, beneficiary=body.beneficiary,
+        reason=body.reason, transaction_hash=tx_hash, chain_retirement_id=match.args.retirementId)
+    batch.total_retired += body.quantity
+    db.add(record)
+    try:
+        db.flush()
+        audit(db, user.id, "credits.retired", "retirement", record.id, {"transaction_hash": tx_hash})
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        existing = db.scalar(select(Retirement).where(Retirement.transaction_hash == tx_hash))
+        if not existing: raise
+        if existing.user_id != user.id: fail(409, "Transaction already claimed")
+        return existing
+    db.refresh(record)
     return record
 
 @router.get("/retirements/{certificate_no}", response_model=RetirementOut)
@@ -399,9 +532,9 @@ def dashboard(_: User = Depends(current_user), db: Session = Depends(get_db)):
 
 @router.get("/system/blockchain", response_model=BlockchainConfigOut)
 def blockchain_config(_: User = Depends(require_roles(Role.ADMIN))):
-    configured = all((settings.blockchain_rpc_url, settings.carbon_project_contract_address, settings.carbon_credit_contract_address, settings.blockchain_operator_address)) and bool(settings.blockchain_operator_private_key or settings.blockchain_signer_url)
+    configured = all((settings.blockchain_rpc_url, settings.carbon_project_contract_address, settings.carbon_credit_contract_address, settings.carbon_marketplace_contract_address, settings.blockchain_operator_address)) and bool(settings.blockchain_operator_private_key or settings.blockchain_signer_url)
     signing_mode = "disabled" if not settings.blockchain_enabled else "external_signer" if settings.blockchain_signer_url else "local_signer" if settings.blockchain_operator_private_key else "not_configured"
-    return BlockchainConfigOut(enabled=settings.blockchain_enabled, configured=configured, network=settings.blockchain_name, chain_id=settings.blockchain_chain_id, rpc_url=settings.blockchain_rpc_url, confirmations=settings.blockchain_confirmations, project_contract_address=settings.carbon_project_contract_address, credit_contract_address=settings.carbon_credit_contract_address, operator_address=settings.blockchain_operator_address, signing_mode=signing_mode)
+    return BlockchainConfigOut(enabled=settings.blockchain_enabled, configured=configured, network=settings.blockchain_name, chain_id=settings.blockchain_chain_id, rpc_url=settings.blockchain_rpc_url, confirmations=settings.blockchain_confirmations, project_contract_address=settings.carbon_project_contract_address, credit_contract_address=settings.carbon_credit_contract_address, marketplace_contract_address=settings.carbon_marketplace_contract_address, operator_address=settings.blockchain_operator_address, signing_mode=signing_mode)
 
 @router.get("/system/blockchain/operations", response_model=list[ChainOperationOut])
 def blockchain_operations(response: Response, status: str | None = None, offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100), _: User = Depends(require_roles(Role.ADMIN)), db: Session = Depends(get_db)):

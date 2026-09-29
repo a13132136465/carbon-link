@@ -1,11 +1,12 @@
 # CarbonLink smart contracts
 
-The on-chain layer contains two non-upgradeable contracts:
+The on-chain layer contains three non-upgradeable contracts:
 
 - `CarbonProjectRegistry`: ERC-721 registry for verified projects.
 - `CarbonCreditLedger`: ERC-1155 issuance, transfer, batch freeze and permanent retirement.
+- `CarbonMarketplace`: user-signed escrow listings and atomic native-token settlement.
 
-Both contracts use delayed two-step default-admin transfer, separate operational roles and an emergency pause. They are deliberately non-upgradeable: a replacement requires a new deployment and an explicitly governed migration, avoiding hidden proxy-admin authority.
+The governed contracts use delayed two-step default-admin transfer, separate operational roles and an emergency pause. They are deliberately non-upgradeable: a replacement requires a new deployment and an explicitly governed migration, avoiding hidden proxy-admin authority. The marketplace has no platform withdrawal or operator trading function.
 
 ## Reproducible Docker workflow
 
@@ -25,6 +26,12 @@ docker run --rm --entrypoint forge --env-file contracts/.env \
   -v ${PWD}:/work -w /work/contracts ghcr.io/foundry-rs/foundry:v1.7.1 \
   script script/DeployCarbonLink.s.sol:DeployCarbonLink \
   --rpc-url fuji --broadcast --verify
+```
+
+For an existing CarbonLink deployment, deploy only the marketplace so the registry and issued batch IDs remain unchanged:
+
+```text
+forge script script/DeployMarketplace.s.sol:DeployMarketplace --rpc-url fuji --broadcast
 ```
 
 ## Roles

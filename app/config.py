@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     blockchain_worker_max_attempts: int = 10
     carbon_project_contract_address: str | None = None
     carbon_credit_contract_address: str | None = None
+    carbon_marketplace_contract_address: str | None = None
     blockchain_operator_address: str | None = None
     blockchain_operator_private_key: str | None = None
     blockchain_signer_url: str | None = None

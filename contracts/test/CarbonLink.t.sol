@@ -4,10 +4,12 @@ pragma solidity ^0.8.24;
 import { Test } from "forge-std/Test.sol";
 import { CarbonProjectRegistry } from "../src/CarbonProjectRegistry.sol";
 import { CarbonCreditLedger } from "../src/CarbonCreditLedger.sol";
+import { CarbonMarketplace } from "../src/CarbonMarketplace.sol";
 
 contract CarbonLinkTest is Test {
     CarbonProjectRegistry internal registry;
     CarbonCreditLedger internal credits;
+    CarbonMarketplace internal marketplace;
     address internal admin = makeAddr("admin");
     address internal issuer = makeAddr("issuer");
     address internal verifier = makeAddr("verifier");
@@ -19,6 +21,7 @@ contract CarbonLinkTest is Test {
         vm.startPrank(admin);
         registry = new CarbonProjectRegistry(admin, issuer, 2 days);
         credits = new CarbonCreditLedger(admin, issuer, 2 days, address(registry));
+        marketplace = new CarbonMarketplace(admin, 2 days, address(credits));
         registry.grantRole(registry.REGISTRAR_ROLE(), issuer);
         registry.grantRole(registry.VERIFIER_ROLE(), verifier);
         credits.grantRole(credits.ISSUER_ROLE(), issuer);
@@ -29,6 +32,30 @@ contract CarbonLinkTest is Test {
         projectId = registry.registerProject(
             owner, "PRJ-2026-001", keccak256("project metadata"), "ipfs://project/metadata.json"
         );
+    }
+
+    function testUsersSignAtomicMarketplaceTrade() public {
+        uint256 batchId = _issue(10 * 10_000);
+        vm.prank(owner);
+        credits.setApprovalForAll(address(marketplace), true);
+        vm.prank(owner);
+        uint256 listingId = marketplace.createListing(batchId, 2 * 10_000, 1 ether);
+        assertEq(marketplace.activeListingCount(), 1);
+        assertEq(marketplace.activeListingIdAt(0), listingId);
+        assertEq(credits.balanceOf(owner, batchId), 8 * 10_000);
+        assertEq(marketplace.lockedBalance(owner, batchId), 2 * 10_000);
+
+        vm.deal(buyer, 2 ether);
+        vm.prank(buyer);
+        marketplace.buy{value: 1 ether}(listingId, 1 * 10_000);
+        assertEq(credits.balanceOf(buyer, batchId), 1 * 10_000);
+        assertEq(marketplace.lockedBalance(owner, batchId), 1 * 10_000);
+
+        vm.prank(owner);
+        marketplace.cancel(listingId);
+        assertEq(credits.balanceOf(owner, batchId), 9 * 10_000);
+        assertEq(marketplace.lockedBalance(owner, batchId), 0);
+        assertEq(marketplace.activeListingCount(), 0);
     }
 
     function testRegisterProjectAndLookup() public view {

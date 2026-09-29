@@ -11,7 +11,7 @@ from web3.exceptions import TransactionNotFound
 
 from app.config import settings
 from app.database import SessionLocal
-from app.models import ChainOperation
+from app.models import ChainOperation, CreditBatch, Project
 
 logger = logging.getLogger("carbonlink.chain_worker")
 SCALE = Decimal("10000")
@@ -23,6 +23,12 @@ PROJECT_ABI = [{
 }, {
     "type":"function", "name":"tokenByExternalProjectId", "stateMutability":"view",
     "inputs":[{"name":"externalProjectId","type":"string"}], "outputs":[{"name":"","type":"uint256"}],
+}, {
+    "type":"function", "name":"ownerOf", "stateMutability":"view",
+    "inputs":[{"name":"tokenId","type":"uint256"}], "outputs":[{"name":"","type":"address"}],
+}, {
+    "type":"function", "name":"safeTransferFrom", "stateMutability":"nonpayable",
+    "inputs":[{"name":"from","type":"address"},{"name":"to","type":"address"},{"name":"tokenId","type":"uint256"}], "outputs":[],
 }]
 
 CREDIT_ABI = [{
@@ -36,6 +42,12 @@ CREDIT_ABI = [{
 }, {
     "type":"function", "name":"batchByVerificationHash", "stateMutability":"view",
     "inputs":[{"name":"verificationHash","type":"bytes32"}], "outputs":[{"name":"","type":"uint256"}],
+}, {
+    "type":"function", "name":"balanceOf", "stateMutability":"view",
+    "inputs":[{"name":"account","type":"address"},{"name":"id","type":"uint256"}], "outputs":[{"name":"","type":"uint256"}],
+}, {
+    "type":"function", "name":"safeTransferFrom", "stateMutability":"nonpayable",
+    "inputs":[{"name":"from","type":"address"},{"name":"to","type":"address"},{"name":"id","type":"uint256"},{"name":"amount","type":"uint256"},{"name":"data","type":"bytes"}], "outputs":[],
 }]
 
 def utcnow() -> datetime:
@@ -57,7 +69,7 @@ class ChainWorker:
         p = operation.payload
         if operation.operation_type == "project.register":
             return self.projects.functions.registerProject(
-                self.operator, p["project_id"], self._digest(p), f"carbonlink://project/{p['project_id']}"
+                Web3.to_checksum_address(p["owner_wallet"]), p["project_id"], self._digest(p), f"carbonlink://project/{p['project_id']}"
             )
         if operation.operation_type == "credit.issue":
             project_token_id = self.projects.functions.tokenByExternalProjectId(p["project_id"]).call()
@@ -65,15 +77,17 @@ class ChainWorker:
                 raise RuntimeError("project is not confirmed on chain yet")
             verification_hash = Web3.keccak(text=p["batch_id"])
             return self.credits.functions.issueBatch(
-                self.operator, project_token_id, verification_hash, int(p["vintage"]),
+                Web3.to_checksum_address(p["recipient"]), project_token_id, verification_hash, int(p["vintage"]),
                 int(Decimal(p["quantity"]) * SCALE), self._digest(p), f"carbonlink://batch/{p['batch_id']}"
             )
-        if operation.operation_type == "credit.retire":
-            batch_id = self.credits.functions.batchByVerificationHash(Web3.keccak(text=p["batch_id"])).call()
-            if not batch_id:
-                raise RuntimeError("credit batch is not confirmed on chain yet")
-            return self.credits.functions.retire(
-                batch_id, int(Decimal(p["quantity"]) * SCALE), Web3.keccak(text=p["beneficiary"]), self._digest(p)
+        if operation.operation_type == "project.transfer":
+            return self.projects.functions.safeTransferFrom(
+                self.operator, Web3.to_checksum_address(p["recipient"]), int(p["token_id"])
+            )
+        if operation.operation_type == "credit.transfer":
+            return self.credits.functions.safeTransferFrom(
+                self.operator, Web3.to_checksum_address(p["recipient"]), int(p["token_id"]),
+                int(Decimal(p["quantity"]) * SCALE), b""
             )
         raise RuntimeError(f"unsupported chain operation: {operation.operation_type}")
 
@@ -120,7 +134,7 @@ class ChainWorker:
         operation.submitted_at = utcnow()
         operation.error_message = None
 
-    def confirm(self, operation: ChainOperation) -> None:
+    def confirm(self, db, operation: ChainOperation) -> None:
         try:
             receipt = self.w3.eth.get_transaction_receipt(operation.transaction_hash)
         except TransactionNotFound:
@@ -141,12 +155,21 @@ class ChainWorker:
             operation.status = "confirmed"
             operation.block_number = receipt.blockNumber
             operation.confirmed_at = utcnow()
+            if operation.operation_type == "project.register":
+                project = self.w3.eth.contract(address=Web3.to_checksum_address(operation.contract_address), abi=PROJECT_ABI)
+                token_id = project.functions.tokenByExternalProjectId(operation.payload["project_id"]).call()
+                record = db.get(Project, operation.resource_id)
+                if record: record.chain_token_id = token_id
+            elif operation.operation_type == "credit.issue":
+                batch_id = self.credits.functions.batchByVerificationHash(Web3.keccak(text=operation.payload["batch_id"])).call()
+                record = db.get(CreditBatch, operation.resource_id)
+                if record: record.chain_batch_id = batch_id
 
     def run_once(self) -> bool:
         with SessionLocal() as db:
             submitted = db.scalar(select(ChainOperation).where(ChainOperation.status == "submitted").order_by(ChainOperation.submitted_at).limit(1))
             if submitted:
-                self.confirm(submitted)
+                self.confirm(db, submitted)
                 db.commit()
                 return True
             operation = db.scalar(select(ChainOperation).where(

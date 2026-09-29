@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.config import settings
 from app.deps import current_user
 from app.market_service import lock_batch, plan_fills, settle
 from app.models import CreditBatch, Listing, ListingStatus, Project, Trade, User
@@ -33,6 +34,7 @@ def instruments(db: Session = Depends(get_db)):
     rows = db.execute(select(CreditBatch, Project.name, Project.region).join(Project, Project.id == CreditBatch.project_id).order_by(CreditBatch.issued_at.desc()))
     return [{"batch_id": b.id, "name": name, "region": region, "vintage": b.vintage,
              "methodology": b.methodology, "serial_prefix": b.serial_prefix,
+             "chain_batch_id": b.chain_batch_id,
              "currencies": sorted(currencies.get(b.id, []))} for b, name, region in rows]
 
 
@@ -74,6 +76,7 @@ def orders(response: Response, batch_id: str | None = None, currency: str | None
 
 @router.post("/quote")
 def quote(body: ExecuteIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if settings.blockchain_enabled: fail(410, "Centralized quotes are disabled; read active listings from the marketplace contract")
     if not db.get(CreditBatch, body.batch_id):
         fail(404, "Carbon batch not found")
     fills, remaining = plan_fills(db, body, user.id)
@@ -86,6 +89,7 @@ def quote(body: ExecuteIn, user: User = Depends(current_user), db: Session = Dep
 
 @router.post("/execute", status_code=201)
 def execute(body: ExecuteIn, idempotency_key: str = Header(alias="Idempotency-Key"), user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if settings.blockchain_enabled: fail(410, "Centralized settlement is disabled; sign a marketplace contract transaction")
     reserve_operation(db, user.id, "market.execute", idempotency_key)
     lock_batch(db, body.batch_id)
     fills, remaining = plan_fills(db, body, user.id, lock=True)

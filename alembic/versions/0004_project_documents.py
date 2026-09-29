@@ -12,6 +12,8 @@ branch_labels = None
 depends_on = None
 
 def upgrade():
+    if sa.inspect(op.get_bind()).has_table("project_documents"):
+        return
     op.create_table(
         "project_documents",
         sa.Column("id", sa.String(36), primary_key=True),
