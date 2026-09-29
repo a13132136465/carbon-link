@@ -4,6 +4,15 @@ export class ApiError extends Error {
   constructor(public status: number, message: string) { super(message) }
 }
 
+function errorDetail(detail: unknown, status: number): string {
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail)) return detail.map(item => {
+    const field = Array.isArray(item.loc) ? item.loc.slice(1).join('.') : ''
+    return `${field ? `${field}: ` : ''}${item.msg || '输入无效'}`
+  }).join('；')
+  return `请求失败 (${status})`
+}
+
 export async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = localStorage.getItem('carbonlink_token')
   const response = await fetch(`${API}${path}`, {
@@ -20,7 +29,7 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
   }
   if (!response.ok) {
     const body = await response.json().catch(() => ({}))
-    throw new ApiError(response.status, body.detail || `请求失败 (${response.status})`)
+    throw new ApiError(response.status, errorDetail(body.detail, response.status))
   }
   if (response.status === 204) return undefined as T
   return response.json() as Promise<T>
@@ -42,7 +51,7 @@ export async function requestPage<T>(path: string, options: RequestInit = {}): P
   }
   if (!response.ok) {
     const body = await response.json().catch(() => ({}))
-    throw new ApiError(response.status, body.detail || `请求失败 (${response.status})`)
+    throw new ApiError(response.status, errorDetail(body.detail, response.status))
   }
   return {data:await response.json() as T,total:Number(response.headers.get('X-Total-Count')||0)}
 }

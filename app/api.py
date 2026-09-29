@@ -10,6 +10,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from app.config import settings
+from app.market_service import lock_batch, settle
 from app.database import get_db
 from app.deps import current_user, require_roles
 from app.models import AuditEvent, ChainOperation, CreditBatch, Holding, LedgerEntry, LedgerKind, Listing, ListingStatus, PasswordResetToken, Project, ProjectDocument, ProjectStatus, Retirement, Role, Trade, User
@@ -315,7 +316,10 @@ def ledger(response: Response, offset: int = Query(0, ge=0), limit: int = Query(
     return list(db.scalars(select(LedgerEntry).where(LedgerEntry.user_id == user.id).order_by(LedgerEntry.created_at.desc()).offset(offset).limit(limit)))
 
 @router.post("/market/listings", response_model=ListingOut, status_code=201)
-def create_listing(body: ListingIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+def create_listing(body: ListingIn, user: User = Depends(current_user), db: Session = Depends(get_db), idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")):
+    if idempotency_key is not None:
+        reserve_operation(db, user.id, "listing.create", idempotency_key)
+    lock_batch(db, body.batch_id)
     holding = locked_holding(db, user.id, body.batch_id)
     if holding.quantity - holding.locked_quantity < body.quantity: fail(409, "Insufficient available credits")
     holding.locked_quantity += body.quantity
@@ -333,31 +337,31 @@ def list_market(response: Response, batch_id: str | None = None, offset: int = Q
 @router.post("/market/listings/{listing_id}/buy", response_model=TradeOut, status_code=201)
 def buy(listing_id: str, body: BuyIn, idempotency_key: str = Header(alias="Idempotency-Key"), user: User = Depends(current_user), db: Session = Depends(get_db)):
     reserve_operation(db, user.id, f"listing.buy:{listing_id}", idempotency_key)
-    listing = db.scalar(select(Listing).where(Listing.id == listing_id).with_for_update())
+    existing = db.get(Listing, listing_id)
+    if not existing: fail(404, "Listing not found")
+    lock_batch(db, existing.batch_id)
+    listing = db.scalar(select(Listing).where(Listing.id == listing_id).with_for_update().execution_options(populate_existing=True))
     if not listing: fail(404, "Listing not found")
     if listing.status != ListingStatus.OPEN or listing.remaining_quantity < body.quantity: fail(409, "Requested quantity is unavailable")
     if listing.seller_id == user.id: fail(409, "Seller cannot buy their own listing")
-    seller = locked_holding(db, listing.seller_id, listing.batch_id)
-    buyer = locked_holding(db, user.id, listing.batch_id, create=True)
-    if seller.quantity < body.quantity or seller.locked_quantity < body.quantity: fail(409, "Seller inventory is inconsistent")
-    seller.quantity -= body.quantity; seller.locked_quantity -= body.quantity; buyer.quantity += body.quantity
-    listing.remaining_quantity -= body.quantity
-    if listing.remaining_quantity == 0: listing.status = ListingStatus.FILLED
-    trade = Trade(listing_id=listing.id, buyer_id=user.id, seller_id=listing.seller_id, batch_id=listing.batch_id, quantity=body.quantity, unit_price=listing.unit_price, total_amount=body.quantity * listing.unit_price, currency=listing.currency)
-    db.add(trade); db.flush()
-    add_ledger(db, seller, LedgerKind.TRADE_OUT, -body.quantity, "trade", trade.id); add_ledger(db, buyer, LedgerKind.TRADE_IN, body.quantity, "trade", trade.id)
-    audit(db, user.id, "trade.settled", "trade", trade.id); db.commit(); db.refresh(trade)
+    trade = settle(db, listing, user.id, body.quantity)
+    db.commit(); db.refresh(trade)
     return trade
 
 @router.get("/market/trades", response_model=list[TradeOut])
-def trades(response: Response, mine: bool = True, offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100), user: User = Depends(current_user), db: Session = Depends(get_db)):
+def trades(response: Response, mine: bool = True, batch_id: str | None = None, currency: str | None = None, offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100), user: User = Depends(current_user), db: Session = Depends(get_db)):
     filters = [or_(Trade.buyer_id == user.id, Trade.seller_id == user.id)] if mine or user.role != Role.ADMIN else []
+    if batch_id: filters.append(Trade.batch_id == batch_id)
+    if currency: filters.append(Trade.currency == currency)
     total_header(response, db.scalar(select(func.count(Trade.id)).where(*filters)) or 0)
     return list(db.scalars(select(Trade).where(*filters).order_by(Trade.traded_at.desc()).offset(offset).limit(limit)))
 
 @router.delete("/market/listings/{listing_id}", status_code=204)
 def cancel_listing(listing_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    listing = db.scalar(select(Listing).where(Listing.id == listing_id).with_for_update())
+    existing = db.get(Listing, listing_id)
+    if not existing: fail(404, "Listing not found")
+    lock_batch(db, existing.batch_id)
+    listing = db.scalar(select(Listing).where(Listing.id == listing_id).with_for_update().execution_options(populate_existing=True))
     if not listing: fail(404, "Listing not found")
     if listing.seller_id != user.id and user.role != Role.ADMIN: fail(403, "Only the seller can cancel this listing")
     if listing.status != ListingStatus.OPEN: fail(409, "Listing is not open")
@@ -367,9 +371,9 @@ def cancel_listing(listing_id: str, user: User = Depends(current_user), db: Sess
 @router.post("/retirements", response_model=RetirementOut, status_code=201)
 def retire(body: RetireIn, idempotency_key: str = Header(alias="Idempotency-Key"), user: User = Depends(current_user), db: Session = Depends(get_db)):
     reserve_operation(db, user.id, "credits.retire", idempotency_key)
+    batch = lock_batch(db, body.batch_id)
     holding = locked_holding(db, user.id, body.batch_id)
     if holding.quantity - holding.locked_quantity < body.quantity: fail(409, "Insufficient available credits")
-    batch = db.scalar(select(CreditBatch).where(CreditBatch.id == body.batch_id).with_for_update())
     holding.quantity -= body.quantity; batch.total_retired += body.quantity
     record = Retirement(certificate_no=f"CLR-{datetime.now(timezone.utc):%Y%m%d}-{uuid4().hex[:12].upper()}", user_id=user.id, **body.model_dump())
     db.add(record); db.flush(); add_ledger(db, holding, LedgerKind.RETIRE, -body.quantity, "retirement", record.id)
