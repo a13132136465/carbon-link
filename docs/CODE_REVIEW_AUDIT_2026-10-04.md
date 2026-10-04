@@ -1,5 +1,7 @@
 # CarbonLink Code Review 与安全审计报告
 
+> 本文保留审计时的历史发现；后续修复及验证结果见 [修复记录](D:/project/carbon-link/docs/SECURITY_REMEDIATION_2026-10-04.md)。
+
 审计日期：2026-10-04（Asia/Hong_Kong）  
 项目：`D:\project\carbon-link`  
 基准提交：`afee1905b47b502a56dfb667bb555bd31ce059e1`  

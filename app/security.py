@@ -14,13 +14,13 @@ def hash_password(password: str) -> str:
 def verify_password(password: str, encoded: str) -> bool:
     return password_hash.verify(password, encoded)
 
-def create_access_token(user_id: str, role: str) -> str:
+def create_access_token(user_id: str, role: str, token_version: int = 0) -> str:
     now = datetime.now(timezone.utc)
-    payload = {"sub": user_id, "role": role, "iat": now, "exp": now + timedelta(minutes=settings.access_token_minutes)}
+    payload = {"sub": user_id, "role": role, "ver": token_version, "iat": now, "exp": now + timedelta(minutes=settings.access_token_minutes)}
     return jwt.encode(payload, settings.jwt_secret, algorithm=ALGORITHM)
 
 def decode_access_token(token: str) -> dict:
-    return jwt.decode(token, settings.jwt_secret, algorithms=[ALGORITHM], options={"require": ["sub", "exp", "iat"]})
+    return jwt.decode(token, settings.jwt_secret, algorithms=[ALGORITHM], options={"require": ["sub", "exp", "iat", "ver"]})
 
 def create_reset_token() -> tuple[str, str]:
     token = secrets.token_urlsafe(32)

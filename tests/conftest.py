@@ -15,7 +15,8 @@ from app.database import Base, engine
 from app.main import app
 
 @pytest.fixture()
-def client():
+def client(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.api.UPLOAD_ROOT", tmp_path / "uploads")
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     with TestClient(app) as test_client:

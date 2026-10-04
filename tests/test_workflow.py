@@ -20,6 +20,7 @@ def test_full_registry_market_and_retirement_workflow(client):
     created = client.post("/api/v1/projects", headers=seller, json={"name": "华南光伏一期", "project_type": "renewable_energy", "region": "广东", "methodology": "CM-001-V01", "description": "50MW 分布式光伏", "estimated_tonnes": "1000.0000"})
     assert created.status_code == 201, created.text
     project_id = created.json()["id"]
+    upload_required(client, seller, project_id)
     assert client.post(f"/api/v1/projects/{project_id}/submit", headers=seller).status_code == 200
     reviewed = client.post(f"/api/v1/projects/{project_id}/review", headers=admin, json={"approved": True, "note": "核证材料完整"})
     assert reviewed.json()["status"] == "approved"
@@ -87,7 +88,9 @@ def test_project_edit_delete_and_pagination(client):
     assert page.headers["X-Total-Count"] == "1"
     assert client.delete(f"/api/v1/projects/{project_id}", headers=user).status_code == 204
 
-def test_account_recovery_and_admin_role_management(client):
+def test_account_recovery_and_admin_role_management(client, monkeypatch):
+    delivered = []
+    monkeypatch.setattr("app.api.send_password_reset", lambda email, token: delivered.append(token))
     register(client, "account@example.com")
     admin = login(client, "admin@example.com", "AdminPassword123!")
     users = client.get("/api/v1/users", headers=admin)
@@ -96,7 +99,8 @@ def test_account_recovery_and_admin_role_management(client):
     assert changed.status_code == 200
     assert changed.json()["role"] == "verifier"
     forgot = client.post("/api/v1/auth/password/forgot", json={"email": "account@example.com"})
-    token = forgot.json()["reset_token"]
+    assert "reset_token" not in forgot.json()
+    token = delivered[0]
     assert token
     reset = client.post("/api/v1/auth/password/reset", json={"token": token, "new_password": "NewPassword123!"})
     assert reset.status_code == 200
@@ -127,3 +131,11 @@ def test_enterprise_application_materials_and_agent(client):
     submitted = client.post(f"/api/v1/applications/{project_id}/submit", headers=user)
     assert submitted.status_code == 200
     assert submitted.json()["status"] == "pending"
+
+
+def upload_required(client, headers, project_id):
+    from app.application_agent import REQUIRED_DOCUMENTS
+    for category in REQUIRED_DOCUMENTS:
+        result = client.post(f"/api/v1/projects/{project_id}/documents?category={category}",
+            headers={**headers, "Content-Type": "application/pdf", "X-File-Name": "test.pdf"}, content=b"%PDF-test")
+        assert result.status_code == 201, result.text

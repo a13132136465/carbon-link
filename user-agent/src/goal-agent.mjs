@@ -3,7 +3,7 @@ import OpenAI from 'openai'
 const actionSchema = {
   type: 'object',
   properties: {
-    action: { type: 'string', enum: ['click', 'fill', 'select', 'upload_pdf', 'navigate', 'wait', 'finish'] },
+    action: { type: 'string', enum: ['click', 'fill', 'select', 'upload_pdf', 'navigate', 'wait', 'finish', 'blocked', 'failed'] },
     target: { type: 'string', description: 'Visible button/link name, form label, text, or same-origin path.' },
     value: { type: 'string', description: 'Text/select value, or empty string when unused.' },
     reason: { type: 'string', description: 'Short explanation of why this is the next action.' },
@@ -21,7 +21,7 @@ function validateAction(action) {
   for (const key of ['target', 'value', 'reason']) {
     if (typeof action[key] !== 'string') throw new Error(`模型动作缺少字符串字段 ${key}`)
   }
-  if (action.action !== 'finish' && blockedTargets.test(action.target)) throw new Error(`安全策略阻止操作：${action.target}`)
+  if (!['finish', 'blocked', 'failed'].includes(action.action) && blockedTargets.test(action.target)) throw new Error(`安全策略阻止操作：${action.target}`)
   return action
 }
 
@@ -45,7 +45,7 @@ async function chooseAction(client, model, prompt, state, history) {
         'Choose exactly one safe action that advances the user goal.',
         'Use only visible accessible names and labels from the supplied accessibility tree.',
         'Never invent selectors, run scripts, leave the configured origin, delete data, change passwords, or initiate financial/blockchain transactions.',
-        'Use finish only when the goal is visibly achieved. If blocked, finish and explain the blocker.',
+        'Use finish only when the goal is visibly achieved; its target must be exact visible success text. Use blocked or failed when the goal cannot be completed, and explain the reason.',
       ].join(' '),
     },
     {
@@ -124,10 +124,19 @@ export async function runGoalAgent(session, config) {
     const action = await chooseAction(client, config.model, config.goal, state, { identity: session.identity, actions })
     actions.push(action)
     session.events.push({ type: 'planner', step, action, at: new Date().toISOString() })
-    if (action.action === 'finish') {
-      return { goal: config.goal, completed: true, reason: action.reason, steps: actions.length, actions }
+    if (['finish', 'blocked', 'failed'].includes(action.action)) {
+      return resolveOutcome(session.page, action, { goal: config.goal, steps: actions.length, actions })
     }
     await performAction(session, action, step)
   }
   throw new Error(`达到最大自主步骤 ${config.maxSteps}，目标仍未完成`)
+}
+
+export async function resolveOutcome(page, action, detail = {}) {
+  if (action.action !== 'finish') {
+    return { ...detail, completed: false, status: action.action === 'blocked' ? 'blocked' : 'failed', reason: action.reason }
+  }
+  const visible = action.target.trim() && await page.getByText(action.target, { exact: true }).first().isVisible()
+  if (!visible) return { ...detail, completed: false, status: 'failed', reason: '缺少可见的完成证据' }
+  return { ...detail, completed: true, status: 'success', reason: action.reason }
 }

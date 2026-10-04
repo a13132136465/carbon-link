@@ -16,7 +16,7 @@ function Login({ onLogin }: { onLogin:(token:string)=>Promise<void> }) {
   const [loading,setLoading]=useState(false), [error,setError]=useState('')
   const submit=async(e:FormEvent)=>{e.preventDefault();setLoading(true);setError('');try{
     if(mode==='register'){await request('/auth/register',json({email,password,display_name:name}));const data=await request<{access_token:string}>('/auth/login',json({email,password}));await onLogin(data.access_token)}
-    else if(mode==='forgot'){const data=await request<{reset_token?:string}>('/auth/password/forgot',json({email}));if(data.reset_token){setToken(data.reset_token);setMode('reset')}else{setError('若账号存在，重置邮件已发送，请检查邮箱。')}}
+    else if(mode==='forgot'){await request('/auth/password/forgot',json({email}));setError('若账号存在，重置邮件已发送，请检查邮箱。')}
     else if(mode==='reset'){await request('/auth/password/reset',json({token,new_password:password}));setMode('login');setPassword('');setError('密码已重置，请使用新密码登录。')}
     else {const data=await request<{access_token:string}>('/auth/login',json({email,password}));await onLogin(data.access_token)}
   }catch(e){setError(e instanceof Error?e.message:'操作失败')}finally{setLoading(false)}}

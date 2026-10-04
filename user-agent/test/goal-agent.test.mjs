@@ -14,7 +14,7 @@ const actions = [
   { action: 'fill', target: '邮箱地址', value: 'goal@example.com', reason: '填写邮箱' },
   { action: 'fill', target: '密码', value: 'AgentPassword123!', reason: '填写密码' },
   { action: 'click', target: '注册并登录', value: '', reason: '提交表单' },
-  { action: 'finish', target: '', value: '', reason: '页面显示注册成功' },
+  { action: 'finish', target: '注册成功', value: '', reason: '页面显示注册成功' },
 ]
 
 function listen(server) {

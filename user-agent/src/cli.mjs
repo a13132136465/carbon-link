@@ -192,6 +192,10 @@ Fuji 全流程: --env-file, --fund-wallets, --issue-quantity, --order-quantity, 
               : null,
           },
         })
+        if (scenarioName === 'goal' && !data?.completed) {
+          status = data?.status === 'blocked' ? 'blocked' : 'failed'
+          error = { message: data?.reason || '目标未完成' }
+        }
       } catch (caught) {
         status = 'failed'
         error = { message: caught.message, stack: caught.stack }

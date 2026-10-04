@@ -38,6 +38,7 @@ class User(Base):
     __tablename__ = "users"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
+    token_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     password_hash: Mapped[str] = mapped_column(String(255))
     display_name: Mapped[str] = mapped_column(String(120))
     role: Mapped[Role] = mapped_column(Enum(Role), default=Role.MEMBER, index=True)
@@ -196,6 +197,7 @@ class ChainOperation(Base):
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     transaction_hash: Mapped[str | None] = mapped_column(String(80), unique=True)
     raw_transaction: Mapped[str | None] = mapped_column(Text)
+    signer_address: Mapped[str | None] = mapped_column(String(42), index=True)
     nonce: Mapped[int | None] = mapped_column(Integer)
     block_number: Mapped[int | None] = mapped_column(Integer)
     error_message: Mapped[str | None] = mapped_column(Text)

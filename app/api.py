@@ -8,11 +8,13 @@ from urllib.parse import unquote
 from uuid import uuid4
 from fastapi import APIRouter, Depends, Header, Query, Request, Response
 from fastapi.responses import FileResponse
-from sqlalchemy import func, or_, select
+from starlette.concurrency import run_in_threadpool
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from eth_account.messages import encode_defunct
 from web3 import HTTPProvider, Web3
+from web3.exceptions import ContractCustomError
 from app.config import settings
 from app.market_service import lock_batch, settle
 from app.database import get_db
@@ -36,6 +38,9 @@ ALLOWED_UPLOAD_TYPES = {
 }
 SCALE = Decimal("10000")
 CREDIT_READ_ABI = [
+    {"type":"function","name":"getBatch","stateMutability":"view","inputs":[{"name":"batchId","type":"uint256"}],"outputs":[{"name":"","type":"tuple","components":[
+        {"name":"projectTokenId","type":"uint256"},{"name":"verificationHash","type":"bytes32"},{"name":"metadataDigest","type":"bytes32"},
+        {"name":"vintage","type":"uint64"},{"name":"issuedAt","type":"uint64"},{"name":"totalIssued","type":"uint256"},{"name":"totalRetired","type":"uint256"},{"name":"frozen","type":"bool"}]}]},
     {"type":"function","name":"balanceOf","stateMutability":"view","inputs":[{"name":"account","type":"address"},{"name":"id","type":"uint256"}],"outputs":[{"name":"","type":"uint256"}]},
     {"type":"event","name":"CreditRetired","anonymous":False,"inputs":[{"name":"retirementId","type":"uint256","indexed":True},{"name":"batchId","type":"uint256","indexed":True},{"name":"account","type":"address","indexed":True},{"name":"amount","type":"uint256","indexed":False},{"name":"beneficiaryHash","type":"bytes32","indexed":False},{"name":"evidenceDigest","type":"bytes32","indexed":False}]},
 ]
@@ -58,8 +63,14 @@ USDC_SCALE = Decimal("1000000")
 def total_header(response: Response, total: int) -> None:
     response.headers["X-Total-Count"] = str(total)
 
-def owned_project(db: Session, project_id: str, user: User, *, reviewer: bool = False) -> Project:
-    project = db.get(Project, project_id)
+def locked_project(db: Session, project_id: str) -> Project:
+    project = db.scalar(select(Project).where(Project.id == project_id).with_for_update().execution_options(populate_existing=True))
+    if not project: fail(404, "Project not found")
+    return project
+
+
+def owned_project(db: Session, project_id: str, user: User, *, reviewer: bool = False, lock: bool = False) -> Project:
+    project = locked_project(db, project_id) if lock else db.get(Project, project_id)
     if not project: fail(404, "Project not found")
     if project.owner_id != user.id and not (reviewer and user.role in (Role.ADMIN, Role.VERIFIER)):
         fail(403, "You do not have access to this project")
@@ -92,37 +103,41 @@ def login(body: LoginIn, db: Session = Depends(get_db)):
     user = db.scalar(select(User).where(User.email == body.email.lower()))
     if not user or not user.is_active or not verify_password(body.password, user.password_hash):
         fail(401, "Invalid email or password")
-    return TokenOut(access_token=create_access_token(user.id, user.role.value), expires_in=settings.access_token_minutes * 60)
+    return TokenOut(access_token=create_access_token(user.id, user.role.value, user.token_version), expires_in=settings.access_token_minutes * 60)
 
 @router.post("/auth/password/forgot", response_model=ForgotPasswordOut)
 def forgot_password(body: ForgotPasswordIn, db: Session = Depends(get_db)):
-    user = db.scalar(select(User).where(User.email == body.email.lower(), User.is_active.is_(True)))
-    raw_token = None
+    user = db.scalar(select(User).where(User.email == body.email.lower(), User.is_active.is_(True)).with_for_update())
     if user:
         raw_token, token_hash = create_reset_token()
         db.add(PasswordResetToken(user_id=user.id, token_hash=token_hash, expires_at=datetime.now(timezone.utc) + timedelta(minutes=settings.password_reset_minutes)))
         db.commit()
         try:
-            delivered = send_password_reset(user.email, raw_token)
+            send_password_reset(user.email, raw_token)
         except Exception:
-            delivered = False
-            logger.exception("failed to send password reset email")
-        if settings.environment == "production" or delivered:
-            raw_token = None
-    return ForgotPasswordOut(message="If the account exists, reset instructions have been sent", reset_token=raw_token)
+            logger.warning("Password reset email delivery failed")
+    return ForgotPasswordOut(message="If the account exists, reset instructions have been sent")
+
+
+def revoke_credentials(db: Session, user: User) -> None:
+    user.token_version += 1
+    db.execute(update(PasswordResetToken).where(PasswordResetToken.user_id == user.id, PasswordResetToken.used_at.is_(None)).values(used_at=datetime.now(timezone.utc)))
+
 
 @router.post("/auth/password/reset", response_model=MessageOut)
 def reset_password(body: ResetPasswordIn, db: Session = Depends(get_db)):
+    token_hash = hash_reset_token(body.token)
+    owner_id = db.scalar(select(PasswordResetToken.user_id).where(PasswordResetToken.token_hash == token_hash))
+    if not owner_id: fail(400, "Invalid or expired reset token")
+    user = db.scalar(select(User).where(User.id == owner_id).with_for_update().execution_options(populate_existing=True))
     token = db.scalar(select(PasswordResetToken).where(
-        PasswordResetToken.token_hash == hash_reset_token(body.token),
+        PasswordResetToken.token_hash == token_hash,
         PasswordResetToken.used_at.is_(None),
         PasswordResetToken.expires_at > datetime.now(timezone.utc),
-    ).with_for_update())
-    if not token: fail(400, "Invalid or expired reset token")
-    user = db.get(User, token.user_id)
-    if not user or not user.is_active: fail(400, "Invalid or expired reset token")
+    ).with_for_update().execution_options(populate_existing=True))
+    if not token or not user or not user.is_active: fail(400, "Invalid or expired reset token")
     user.password_hash = hash_password(body.new_password)
-    token.used_at = datetime.now(timezone.utc)
+    revoke_credentials(db, user)
     audit(db, user.id, "user.password_reset", "user", user.id)
     db.commit()
     return MessageOut(message="Password has been reset")
@@ -176,15 +191,17 @@ def link_wallet(body: WalletLinkIn, user: User = Depends(current_user), db: Sess
 @router.get("/chain/config", response_model=ChainConfigOut)
 def user_chain_config(_: User = Depends(current_user)):
     return ChainConfigOut(enabled=settings.blockchain_enabled, network=settings.blockchain_name,
-        chain_id=settings.blockchain_chain_id, confirmations=settings.blockchain_confirmations, rpc_url=settings.blockchain_rpc_url,
+        chain_id=settings.blockchain_chain_id, confirmations=settings.blockchain_confirmations, rpc_url=settings.blockchain_public_rpc_url,
         credit_contract_address=settings.carbon_credit_contract_address,
         marketplace_contract_address=settings.carbon_marketplace_contract_address,
         usdc_contract_address=settings.usdc_contract_address)
 
 @router.post("/users/me/password", response_model=MessageOut)
 def change_password(body: ChangePasswordIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    user = db.scalar(select(User).where(User.id == user.id).with_for_update().execution_options(populate_existing=True))
     if not verify_password(body.current_password, user.password_hash): fail(400, "Current password is incorrect")
     user.password_hash = hash_password(body.new_password)
+    revoke_credentials(db, user)
     audit(db, user.id, "user.password_changed", "user", user.id)
     db.commit()
     return MessageOut(message="Password changed")
@@ -196,11 +213,13 @@ def users(response: Response, offset: int = Query(0, ge=0), limit: int = Query(2
 
 @router.put("/users/{user_id}", response_model=UserOut)
 def update_user(user_id: str, body: UserAdminUpdate, actor: User = Depends(require_roles(Role.ADMIN)), db: Session = Depends(get_db)):
-    target = db.get(User, user_id)
+    target = db.scalar(select(User).where(User.id == user_id).with_for_update().execution_options(populate_existing=True))
     if not target: fail(404, "User not found")
     changes = body.model_dump(exclude_none=True)
     if target.id == actor.id and (changes.get("is_active") is False or changes.get("role") not in (None, Role.ADMIN)):
         fail(409, "Administrators cannot remove their own access")
+    if any(key in changes and changes[key] != getattr(target, key) for key in ("role", "is_active")):
+        revoke_credentials(db, target)
     for key, value in changes.items(): setattr(target, key, value)
     audit(db, actor.id, "user.updated", "user", target.id, {key: str(value) for key, value in changes.items()})
     db.commit(); db.refresh(target)
@@ -216,13 +235,13 @@ def create_project(body: ProjectIn, user: User = Depends(current_user), db: Sess
 def projects(response: Response, status_filter: ProjectStatus | None = Query(None, alias="status"), mine: bool = False, offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100), user: User = Depends(current_user), db: Session = Depends(get_db)):
     filters = []
     if status_filter: filters.append(Project.status == status_filter)
-    if mine: filters.append(Project.owner_id == user.id)
+    if mine or user.role == Role.MEMBER: filters.append(Project.owner_id == user.id)
     total_header(response, db.scalar(select(func.count(Project.id)).where(*filters)) or 0)
     return list(db.scalars(select(Project).where(*filters).order_by(Project.created_at.desc()).offset(offset).limit(limit)))
 
 @router.put("/projects/{project_id}", response_model=ProjectOut)
 def update_project(project_id: str, body: ProjectUpdate, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    project = db.get(Project, project_id)
+    project = locked_project(db, project_id)
     if not project: fail(404, "Project not found")
     if project.owner_id != user.id: fail(403, "Only the owner can edit this project")
     if project.status not in (ProjectStatus.DRAFT, ProjectStatus.REJECTED): fail(409, "Only draft or rejected projects can be edited")
@@ -234,7 +253,7 @@ def update_project(project_id: str, body: ProjectUpdate, user: User = Depends(cu
 
 @router.delete("/projects/{project_id}", status_code=204)
 def delete_project(project_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    project = db.get(Project, project_id)
+    project = locked_project(db, project_id)
     if not project: fail(404, "Project not found")
     if project.owner_id != user.id and user.role != Role.ADMIN: fail(403, "Only the owner can delete this project")
     if project.status not in (ProjectStatus.DRAFT, ProjectStatus.REJECTED): fail(409, "Only draft or rejected projects can be deleted")
@@ -243,13 +262,7 @@ def delete_project(project_id: str, user: User = Depends(current_user), db: Sess
 
 @router.post("/projects/{project_id}/submit", response_model=ProjectOut)
 def submit_project(project_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    project = db.get(Project, project_id)
-    if not project: fail(404, "Project not found")
-    if project.owner_id != user.id: fail(403, "Only the owner can submit this project")
-    if project.status not in (ProjectStatus.DRAFT, ProjectStatus.REJECTED): fail(409, "Project cannot be submitted in its current state")
-    project.status = ProjectStatus.PENDING; project.review_note = None
-    audit(db, user.id, "project.submitted", "project", project.id); db.commit(); db.refresh(project)
-    return project
+    return submit_application(project_id, user, db)
 
 @router.get("/applications/{project_id}/readiness", response_model=ApplicationReadinessOut)
 def application_readiness(project_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
@@ -278,19 +291,33 @@ async def upload_project_document(
     content_type = request.headers.get("content-type", "application/octet-stream").split(";", 1)[0]
     if content_type not in ALLOWED_UPLOAD_TYPES:
         fail(415, "Only PDF, Word, Excel, JPG and PNG files are accepted")
-    content = await request.body()
-    if not content or len(content) > settings.max_upload_bytes:
-        fail(413, f"File must be between 1 byte and {settings.max_upload_bytes} bytes")
     original_name = Path(unquote(x_file_name) or "document").name[:255]
     suffix = Path(original_name).suffix.lower()[:12]
     storage_name = f"{project_id}/{uuid4().hex}{suffix}"
     destination = UPLOAD_ROOT / storage_name
     destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_bytes(content)
-    document = ProjectDocument(project_id=project_id, uploaded_by=user.id, category=category, original_name=original_name, storage_name=storage_name, content_type=content_type, size_bytes=len(content))
-    db.add(document); db.flush()
-    audit(db, user.id, "project.document_uploaded", "project", project.id, {"document_id": document.id, "category": category})
-    db.commit(); db.refresh(document)
+    db.rollback()  # Do not hold a transaction while receiving a slow upload.
+    size = 0
+    try:
+        with destination.open("xb") as output:
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > settings.max_upload_bytes:
+                    fail(413, f"File exceeds {settings.max_upload_bytes} bytes")
+                output.write(chunk)
+        if not size: fail(413, "Empty files are not accepted")
+        project = await run_in_threadpool(owned_project, db, project_id, user, lock=True)
+        if project.status not in (ProjectStatus.DRAFT, ProjectStatus.REJECTED):
+            fail(409, "Project was submitted while the document was uploading")
+        document = ProjectDocument(project_id=project_id, uploaded_by=user.id, category=category, original_name=original_name, storage_name=storage_name, content_type=content_type, size_bytes=size)
+        db.add(document); db.flush()
+        audit(db, user.id, "project.document_uploaded", "project", project.id, {"document_id": document.id, "category": category})
+        db.commit()
+    except BaseException:
+        db.rollback()
+        destination.unlink(missing_ok=True)
+        raise
+    db.refresh(document)
     return document
 
 @router.get("/projects/{project_id}/documents/{document_id}/download")
@@ -304,18 +331,18 @@ def download_project_document(project_id: str, document_id: str, user: User = De
 
 @router.delete("/projects/{project_id}/documents/{document_id}", status_code=204)
 def delete_project_document(project_id: str, document_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    project = owned_project(db, project_id, user)
+    project = owned_project(db, project_id, user, lock=True)
     if project.status not in (ProjectStatus.DRAFT, ProjectStatus.REJECTED): fail(409, "Submitted documents are locked")
     document = db.get(ProjectDocument, document_id)
     if not document or document.project_id != project_id: fail(404, "Document not found")
     path = UPLOAD_ROOT / document.storage_name
-    if path.is_file(): path.unlink()
     audit(db, user.id, "project.document_deleted", "project", project.id, {"document_id": document.id})
     db.delete(document); db.commit()
+    path.unlink(missing_ok=True)
 
 @router.post("/applications/{project_id}/submit", response_model=ProjectOut)
 def submit_application(project_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    project = owned_project(db, project_id, user)
+    project = owned_project(db, project_id, user, lock=True)
     if project.status not in (ProjectStatus.DRAFT, ProjectStatus.REJECTED): fail(409, "Project cannot be submitted in its current state")
     readiness = project_readiness(db, project_id)
     if not readiness.ready:
@@ -347,9 +374,11 @@ def application_agent(body: AgentMessageIn, user: User = Depends(current_user), 
 
 @router.post("/projects/{project_id}/review", response_model=ProjectOut)
 def review_project(project_id: str, body: ReviewIn, user: User = Depends(require_roles(Role.ADMIN, Role.VERIFIER)), db: Session = Depends(get_db)):
-    project = db.get(Project, project_id)
+    project = locked_project(db, project_id)
     if not project: fail(404, "Project not found")
     if project.status != ProjectStatus.PENDING: fail(409, "Only pending projects can be reviewed")
+    if body.approved and not project_readiness(db, project_id).ready:
+        fail(409, "All required review materials must be present before approval")
     project.status = ProjectStatus.APPROVED if body.approved else ProjectStatus.REJECTED
     project.review_note = body.note; project.reviewed_by = user.id; project.reviewed_at = datetime.now(timezone.utc)
     audit(db, user.id, "project.reviewed", "project", project.id, {"approved": body.approved})
@@ -407,6 +436,8 @@ def holdings(user: User = Depends(current_user), db: Session = Depends(get_db)):
 
 @router.get("/wallet/ledger", response_model=list[LedgerEntryOut])
 def ledger(response: Response, offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100), user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if settings.blockchain_enabled:
+        fail(409, "On-chain history is not indexed; consult your wallet or block explorer")
     total_header(response, db.scalar(select(func.count(LedgerEntry.id)).where(LedgerEntry.user_id == user.id)) or 0)
     return list(db.scalars(select(LedgerEntry).where(LedgerEntry.user_id == user.id).order_by(LedgerEntry.created_at.desc()).offset(offset).limit(limit)))
 
@@ -509,7 +540,8 @@ def confirm_retirement(body: RetirementConfirmIn, user: User = Depends(current_u
     expected_amount = int(body.quantity * SCALE)
     match = next((event for event in events if event.args.batchId == batch.chain_batch_id and event.args.amount == expected_amount
         and Web3.to_checksum_address(event.args.account) == Web3.to_checksum_address(user.wallet_address)
-        and event.args.beneficiaryHash == Web3.keccak(text=body.beneficiary)), None)
+        and event.args.beneficiaryHash == Web3.keccak(text=body.beneficiary)
+        and event.args.evidenceDigest == Web3.keccak(text=body.reason)), None)
     if not match: fail(422, "Transaction retirement data does not match the request")
     batch = db.scalar(select(CreditBatch).where(CreditBatch.id == body.batch_id).with_for_update().execution_options(populate_existing=True))
     record = Retirement(certificate_no=f"CLR-{datetime.now(timezone.utc):%Y%m%d}-{uuid4().hex[:12].upper()}",
@@ -545,8 +577,10 @@ def retirements(response: Response, offset: int = Query(0, ge=0), limit: int = Q
 def dashboard(_: User = Depends(current_user), db: Session = Depends(get_db)):
     scalar = lambda stmt: db.scalar(stmt) or Decimal("0")
     if settings.blockchain_enabled:
-        open_market_quantity, trade_volume, latest = chain_market_dashboard(db)
+        total_issued, total_retired, open_market_quantity, trade_volume, latest = chain_dashboard(db)
     else:
+        total_issued = scalar(select(func.sum(CreditBatch.total_issued)))
+        total_retired = scalar(select(func.sum(CreditBatch.total_retired)))
         open_filter = Listing.status == ListingStatus.OPEN
         open_market_quantity = scalar(select(func.sum(Listing.remaining_quantity)).where(open_filter))
         trade_volume = scalar(select(func.sum(Trade.quantity)))
@@ -559,25 +593,66 @@ def dashboard(_: User = Depends(current_user), db: Session = Depends(get_db)):
             "created_at": row.created_at,
         } for row in rows]
     return DashboardOut(
-        total_issued=scalar(select(func.sum(CreditBatch.total_issued))),
-        total_retired=scalar(select(func.sum(CreditBatch.total_retired))),
+        total_issued=total_issued,
+        total_retired=total_retired,
+        blockchain_enabled=settings.blockchain_enabled,
         open_market_quantity=open_market_quantity,
         trade_volume=trade_volume,
         project_count=int(db.scalar(select(func.count(Project.id))) or 0),
         latest_market_listings=latest,
     )
 
-def chain_market_dashboard(db: Session) -> tuple[Decimal, Decimal, list[dict]]:
+def chain_dashboard(db: Session) -> tuple[Decimal, Decimal, Decimal, Decimal, list[dict]]:
     w3 = Web3(HTTPProvider(settings.blockchain_rpc_url, request_kwargs={"timeout": settings.blockchain_request_timeout_seconds}))
     market = w3.eth.contract(address=Web3.to_checksum_address(settings.carbon_marketplace_contract_address), abi=MARKET_READ_ABI)
     batch_ids = {batch.chain_batch_id: batch.id for batch in db.scalars(select(CreditBatch).where(CreditBatch.chain_batch_id.is_not(None)))}
-    return summarize_chain_market(batch_ids, market)
+    credits = w3.eth.contract(address=Web3.to_checksum_address(settings.carbon_credit_contract_address), abi=CREDIT_READ_ABI)
+    height = max(0, w3.eth.block_number - max(1, settings.blockchain_confirmations) + 1)
+    # Pin reads to one confirmed snapshot and reject a reorg during collection.
+    snapshot = Web3.to_hex(w3.eth.get_block(height)["hash"])
+    issued, retired = summarize_chain_credits(credits, snapshot)
+    market_totals = summarize_chain_market(batch_ids, market, snapshot)
+    if Web3.to_hex(w3.eth.get_block(height)["hash"]) != snapshot:
+        fail(503, "Chain snapshot changed; retry the dashboard request")
+    return issued, retired, *market_totals
 
-def summarize_chain_market(batch_ids: dict[int, str], market) -> tuple[Decimal, Decimal, list[dict]]:
-    order_count = market.functions.activeOrderCount().call()
-    trade_count = market.functions.tradeCount().call()
-    order_ids = call_contracts([market.functions.activeOrderIdAt(index) for index in range(order_count)])
-    orders = call_contracts([market.functions.orders(order_id) for order_id in order_ids])
+
+def summarize_chain_credits(credits, block_identifier) -> tuple[Decimal, Decimal]:
+    # This ledger allocates contiguous IDs from 1 and never deletes a batch.
+    # Discover the boundary without relying on incomplete local batch records.
+    def exists(batch_id):
+        try:
+            credits.functions.getBatch(batch_id).call(block_identifier=block_identifier)
+            return True
+        except ContractCustomError as exc:
+            expected = Web3.to_hex(Web3.keccak(text="BatchNotFound(uint256)")[:4]) + batch_id.to_bytes(32, "big").hex()
+            if exc.data != expected:
+                raise
+            return False
+
+    low, high = 0, 1
+    while exists(high):
+        low, high = high, high * 2
+    while high - low > 1:
+        mid = (low + high) // 2
+        if exists(mid):
+            low = mid
+        else:
+            high = mid
+    issued = retired = 0
+    # Bounded batches limit memory and concurrent RPC requests.
+    for start in range(1, low + 1, 128):
+        batches = call_contracts([credits.functions.getBatch(i) for i in range(start, min(start + 128, low + 1))], block_identifier)
+        issued += sum(batch[5] for batch in batches)
+        retired += sum(batch[6] for batch in batches)
+    return Decimal(issued) / SCALE, Decimal(retired) / SCALE
+
+
+def summarize_chain_market(batch_ids: dict[int, str], market, block_identifier="latest") -> tuple[Decimal, Decimal, list[dict]]:
+    order_count = market.functions.activeOrderCount().call(block_identifier=block_identifier)
+    trade_count = market.functions.tradeCount().call(block_identifier=block_identifier)
+    order_ids = call_contracts([market.functions.activeOrderIdAt(index) for index in range(order_count)], block_identifier)
+    orders = call_contracts([market.functions.orders(order_id) for order_id in order_ids], block_identifier)
     sell_orders = []
     for order_id, order in zip(order_ids, orders):
         if order[6] and order[5] == 1:
@@ -599,16 +674,16 @@ def summarize_chain_market(batch_ids: dict[int, str], market) -> tuple[Decimal, 
         if len(latest) == 4:
             break
 
-    trades = call_contracts([market.functions.tradeAt(index) for index in range(trade_count)])
+    trades = call_contracts([market.functions.tradeAt(index) for index in range(trade_count)], block_identifier)
     trade_volume = sum((Decimal(trade[4]) / SCALE for trade in trades), Decimal("0"))
     open_market_quantity = sum((Decimal(order[2]) / SCALE for _, order in sell_orders), Decimal("0"))
     return open_market_quantity, trade_volume, latest
 
-def call_contracts(functions: list) -> list:
+def call_contracts(functions: list, block_identifier="latest") -> list:
     if not functions:
         return []
     with ThreadPoolExecutor(max_workers=min(12, len(functions))) as executor:
-        return list(executor.map(lambda function: function.call(), functions))
+        return list(executor.map(lambda function: function.call(block_identifier=block_identifier), functions))
 
 @router.get("/system/blockchain", response_model=BlockchainConfigOut)
 def blockchain_config(_: User = Depends(require_roles(Role.ADMIN))):

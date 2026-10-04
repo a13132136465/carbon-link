@@ -24,7 +24,7 @@ export function Icon({ name, size = 20 }: { name:string; size?:number }) {
 }
 
 export function Status({ value }: { value:string }) {
-  const labels:Record<string,string> = {draft:'草稿',pending:'待审核',approved:'已通过',rejected:'已驳回',open:'交易中',filled:'已成交',cancelled:'已撤销',confirmed:'已确认',prepared:'已签名',submitted:'已广播',failed:'失败'}
+  const labels:Record<string,string> = {draft:'草稿',pending:'待审核',approved:'已通过',rejected:'已驳回',open:'交易中',filled:'已成交',cancelled:'已撤销',confirmed:'已确认',prepared:'已签名',submitted:'已广播',failed:'失败',needs_attention:'需人工核对'}
   return <span className={`status status-${value}`}>{labels[value] || value}</span>
 }
 

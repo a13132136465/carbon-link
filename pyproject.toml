@@ -10,23 +10,19 @@ requires-python = ">=3.12"
 dependencies = [
   "alembic==1.16.5",
   "email-validator==2.2.0",
-  "fastapi==0.116.1",
+  "fastapi==0.142.2",
   "psycopg[binary]==3.2.10",
   "pydantic-settings==2.10.1",
-  "PyJWT==2.10.1",
+  "PyJWT==2.15.1",
   "pwdlib[argon2]==0.2.1",
   "sqlalchemy==2.0.43",
   "uvicorn[standard]==0.35.0",
   "web3==8.0.0",
-  "python-multipart==0.0.20",
-  "langchain==0.3.27",
-  "langchain-openai==0.3.32",
   "openai>=1.99.9,<3",
-  "langgraph==0.6.6",
 ]
 
 [project.optional-dependencies]
-test = ["httpx==0.28.1", "pytest==8.4.2", "pytest-cov==6.2.1"]
+test = ["httpx==0.28.1", "pytest==9.1.1", "pytest-cov==6.2.1"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

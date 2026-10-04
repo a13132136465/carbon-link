@@ -52,3 +52,11 @@ forge script script/DeployMarketplace.s.sol:DeployMarketplace --rpc-url fuji --b
 - Pauser: activates and releases the emergency stop.
 
 Metadata and evidence are addressed by URI while their digests are committed on chain. Beneficiaries are represented by a hash in the retirement record to avoid placing personal or commercially sensitive data directly on a public chain.
+
+
+## 治理与结算边界
+
+- 撤销项目阻止后续发行；已发行批次的可交易性由批次冻结和额度合约暂停独立控制，不自动追溯失效。
+- 买单按基础单位向下取整，最后一次完全成交支付剩余托管 USDC；分笔实际单价可能有微小舍入差异，但总支付不超过原托管额。
+- 市场暂停允许撤单；额度合约暂停或批次冻结时，卖单返还也被底层转账限制，必须先完成治理解锁。
+这些既有规则有回归测试覆盖；本次修复不改变已部署合约的资产规则，也不需要重新部署合约。

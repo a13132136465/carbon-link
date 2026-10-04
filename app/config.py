@@ -1,10 +1,11 @@
 from functools import lru_cache
+from typing import Literal
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
-    environment: str = "development"
+    environment: Literal["development", "test", "production"] = "development"
     database_url: str = "sqlite:///./carbon_link.db"
     jwt_secret: str = "local-development-secret-change-this"
     access_token_minutes: int = 30
@@ -14,9 +15,11 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     blockchain_enabled: bool = False
     blockchain_rpc_url: str | None = None
+    blockchain_public_rpc_url: str | None = None
     blockchain_chain_id: int = 43113
     blockchain_name: str = "avalanche-fuji"
     blockchain_confirmations: int = 3
+    blockchain_transaction_timeout_seconds: int = 1800
     blockchain_request_timeout_seconds: int = 30
     blockchain_worker_poll_seconds: int = 5
     blockchain_worker_max_attempts: int = 10
@@ -61,6 +64,7 @@ class Settings(BaseSettings):
             return self
         required = {
             "BLOCKCHAIN_RPC_URL": self.blockchain_rpc_url,
+            "BLOCKCHAIN_PUBLIC_RPC_URL": self.blockchain_public_rpc_url,
             "CARBON_PROJECT_CONTRACT_ADDRESS": self.carbon_project_contract_address,
             "CARBON_CREDIT_CONTRACT_ADDRESS": self.carbon_credit_contract_address,
             "CARBON_MARKETPLACE_CONTRACT_ADDRESS": self.carbon_marketplace_contract_address,

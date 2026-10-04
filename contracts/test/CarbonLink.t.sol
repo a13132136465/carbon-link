@@ -249,6 +249,44 @@ contract CarbonLinkTest is Test {
         assertEq(credits.balanceOf(owner, batchId), uint256(issued) - uint256(retired));
     }
 
+    function testBuyRoundingConservesEscrowAcrossPartialFills() public {
+        uint256 batchId = _issue(3);
+        vm.prank(buyer);
+        usdc.approve(address(marketplace), type(uint256).max);
+        vm.prank(buyer);
+        uint256 id = marketplace.createBuyOrder(3, 19_999);
+        vm.startPrank(owner);
+        credits.setApprovalForAll(address(marketplace), true);
+        marketplace.fillBuyOrder(id, batchId, 1);
+        assertEq(usdc.balanceOf(owner), 1);
+        marketplace.fillBuyOrder(id, batchId, 1);
+        assertEq(usdc.balanceOf(owner), 2);
+        marketplace.fillBuyOrder(id, batchId, 1);
+        vm.stopPrank();
+        assertEq(usdc.balanceOf(owner), 5);
+        assertEq(marketplace.lockedUsdc(buyer), 0);
+        assertEq(usdc.balanceOf(address(marketplace)), 0);
+    }
+
+    function testCreditPauseDelaysSellCancellationUntilUnpaused() public {
+        uint256 batchId = _issue(10_000);
+        vm.startPrank(owner);
+        credits.setApprovalForAll(address(marketplace), true);
+        uint256 id = marketplace.createSellOrder(batchId, 10_000, 1e6);
+        vm.stopPrank();
+        vm.prank(admin);
+        credits.pause();
+        vm.prank(owner);
+        vm.expectRevert();
+        marketplace.cancel(id);
+        assertEq(marketplace.lockedBalance(owner, batchId), 10_000);
+        vm.prank(admin);
+        credits.unpause();
+        vm.prank(owner);
+        marketplace.cancel(id);
+        assertEq(credits.balanceOf(owner, batchId), 10_000);
+    }
+
     function _issue(uint256 amount) internal returns (uint256) {
         vm.prank(issuer);
         return credits.issueBatch(

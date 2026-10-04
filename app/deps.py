@@ -16,7 +16,7 @@ def current_user(token: str = Depends(oauth2), db: Session = Depends(get_db)) ->
     except jwt.PyJWTError:
         raise error
     user = db.get(User, payload["sub"])
-    if not user or not user.is_active:
+    if not user or not user.is_active or payload.get("ver") != user.token_version:
         raise error
     return user
 

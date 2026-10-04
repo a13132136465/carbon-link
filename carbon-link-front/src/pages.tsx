@@ -18,32 +18,34 @@ const Loader=()=> <div className="loading"><span/><span/><span/></div>
 const field=(form:FormData,name:string)=>String(form.get(name)||'')
 
 export function DashboardPage({user}:{user:User}){
-  const [stats,loading]=useLoad(()=>request<Dashboard>('/dashboard'),{total_issued:'0',total_retired:'0',open_market_quantity:'0',trade_volume:'0',project_count:0,latest_market_listings:[]})
-  const [projects]=useLoad(()=>request<Project[]>('/projects?limit=5'),[])
+  const [stats,loading]=useLoad(()=>request<Dashboard>('/dashboard'),{blockchain_enabled:false,total_issued:null as string|null,total_retired:null as string|null,open_market_quantity:'0',trade_volume:'0',project_count:0,latest_market_listings:[]})
+  const [projects,projectsLoading]=useLoad(()=>request<Project[]>('/projects?limit=5'),[])
   const listings=stats.latest_market_listings
   const retirementRate=Number(stats.total_issued)?Number(stats.total_retired)/Number(stats.total_issued)*100:0
-  if(loading)return <Loader/>
   return <>
     <section className="welcome-row"><div><span className="eyebrow">{new Date().toLocaleDateString('zh-CN',{month:'long',day:'numeric',weekday:'long'})}</span><h2>你好，{user.display_name}</h2><p>这里是碳资产运营的实时概览。</p></div><div className="trust-chip"><span className="trust-icon"><Icon name="check"/></span><div><b>数据服务正常</b><small>账本与链上队列运行中</small></div></div></section>
     <section className="metric-grid">
-      <Metric label="累计签发" value={fmt(stats.total_issued)} unit="tCO₂e" tone="green" trend="平台已核证资产"/>
-      <Metric label="累计注销" value={fmt(stats.total_retired)} unit="tCO₂e" tone="sand" trend={`${retirementRate.toFixed(1)}% 注销率`}/>
-      <Metric label="市场在售" value={fmt(stats.open_market_quantity)} unit="tCO₂e" tone="blue" trend="当前可交易额度"/>
-      <Metric label="累计成交" value={fmt(stats.trade_volume)} unit="tCO₂e" tone="ink" trend={`${stats.project_count} 个登记项目`}/>
+      <Metric label="累计签发" value={loading?null:fmt(stats.total_issued??0)} unit="tCO₂e" tone="green" trend={stats.blockchain_enabled?'链上已确认签发':'平台已核证资产'}/>
+      <Metric label="累计注销" value={loading?null:fmt(stats.total_retired??0)} unit="tCO₂e" tone="sand" trend={loading?'正在计算注销率':`${retirementRate.toFixed(1)}% 注销率`}/>
+      <Metric label="市场在售" value={loading?null:fmt(stats.open_market_quantity)} unit="tCO₂e" tone="blue" trend="当前可交易额度"/>
+      <Metric label="累计成交" value={loading?null:fmt(stats.trade_volume)} unit="tCO₂e" tone="ink" trend={loading?'正在加载登记项目':`${stats.project_count} 个登记项目`}/>
     </section>
     <section className="dashboard-grid">
       <div className="card span-2"><div className="card-head"><div><span className="eyebrow">项目进度</span><h3>最近登记项目</h3></div><a href="/projects" className="text-link">查看全部 <Icon name="arrow" size={16}/></a></div>
-        {projects.length?<div className="project-list">{projects.map(p=><div className="project-row" key={p.id}><div className="project-symbol"><Icon name="project"/></div><div className="project-info"><strong>{p.name}</strong><span>{p.region} · {p.methodology}</span></div><div className="project-tonnes"><b>{fmt(p.estimated_tonnes,0)}</b><span>预计吨数</span></div><Status value={p.status}/></div>)}</div>:<Empty title="暂无项目" text="创建首个碳项目后，进度会显示在这里。"/>}
+        {projectsLoading?<SectionSkeleton rows={4}/>:projects.length?<div className="project-list section-reveal">{projects.map(p=><div className="project-row" key={p.id}><div className="project-symbol"><Icon name="project"/></div><div className="project-info"><strong>{p.name}</strong><span>{p.region} · {p.methodology}</span></div><div className="project-tonnes"><b><AnimatedNumber value={fmt(p.estimated_tonnes,0)}/></b><span>预计吨数</span></div><Status value={p.status}/></div>)}</div>:<Empty title="暂无项目" text="创建首个碳项目后，进度会显示在这里。"/>}
       </div>
-      <div className="card impact-card"><span className="eyebrow light">碳影响力</span><h3>{fmt(stats.total_retired,0)}</h3><p>吨二氧化碳当量已永久注销</p><div className="impact-ring"><span>{retirementRate.toFixed(0)}%</span><small>注销率</small></div><div className="leaf-art"><Icon name="leaf" size={94}/></div></div>
+      <div className="card impact-card"><span className="eyebrow light">碳影响力</span>{loading?<ImpactSkeleton/>:<div className="section-reveal"><h3><AnimatedNumber value={fmt(stats.total_retired??0,0)}/></h3><p>吨二氧化碳当量已永久注销</p><div className="impact-ring"><span><AnimatedNumber value={`${retirementRate.toFixed(0)}%`}/></span><small>注销率</small></div></div>}<div className="leaf-art"><Icon name="leaf" size={94}/></div></div>
       <div className="card span-3"><div className="card-head"><div><span className="eyebrow">实时市场</span><h3>最新在售资产</h3></div><a href="/market" className="text-link">进入市场 <Icon name="arrow" size={16}/></a></div>
-        {listings.length?<div className="market-strip">{listings.slice(0,4).map(l=><div key={l.id}><span>{short(l.batch_id,6)}</span><strong>{fmt(l.remaining_quantity)} t</strong><b>¥ {fmt(l.unit_price)} / t</b></div>)}</div>:<Empty title="暂无在售资产" text="市场挂单将显示在这里。"/>}
+        {loading?<SectionSkeleton rows={2}/>:listings.length?<div className="market-strip section-reveal">{listings.slice(0,4).map(l=><div key={l.id}><span>{short(l.batch_id,6)}</span><strong><AnimatedNumber value={`${fmt(l.remaining_quantity)} t`}/></strong><b>{stats.blockchain_enabled?'USDC':'¥'} <AnimatedNumber value={fmt(l.unit_price)}/> / t</b></div>)}</div>:<Empty title="暂无在售资产" text="市场挂单将显示在这里。"/>}
       </div>
     </section>
   </>
 }
 
-function Metric({label,value,unit,tone,trend}:{label:string;value:string;unit:string;tone:string;trend:string}){return <div className={`metric-card ${tone}`}><div className="metric-top"><span>{label}</span><i/></div><strong>{value}</strong><small>{unit}</small><footer>{trend}</footer></div>}
+function AnimatedNumber({value}:{value:string}){return <span className="number-slide" aria-label={value}><span key={value}>{value}</span></span>}
+function Metric({label,value,unit,tone,trend}:{label:string;value:string|null;unit:string;tone:string;trend:string}){return <div className={`metric-card ${tone}${value===null?' is-loading':' section-reveal'}`}><div className="metric-top"><span>{label}</span><i/></div>{value===null?<span className="metric-value-skeleton skeleton"/>:<strong><AnimatedNumber value={value}/></strong>}<small>{unit}</small><footer>{trend}</footer></div>}
+function SectionSkeleton({rows=3}:{rows?:number}){return <div className="section-skeleton" aria-label="正在加载" aria-busy="true">{Array.from({length:rows},(_,i)=><span className="skeleton" key={i}/>)}</div>}
+function ImpactSkeleton(){return <div className="impact-skeleton" aria-label="正在加载" aria-busy="true"><span className="skeleton"/><span className="skeleton"/><i className="skeleton"/></div>}
 
 export function ProjectsPage({user,notify}:{user:User;notify:(m:string,t?:'success'|'error')=>void}){
   const [filter,setFilter]=useState(''),[page,setPage]=useState(0),[modal,setModal]=useState<'create'|'edit'|'review'|'issue'|null>(null),[selected,setSelected]=useState<Project|null>(null)
@@ -70,13 +72,13 @@ export function ProjectsPage({user,notify}:{user:User;notify:(m:string,t?:'succe
 
 export function WalletPage({notify}:{notify:(m:string,t?:'success'|'error')=>void}){
   const [ledgerPage,setLedgerPage]=useState(0)
-  const [holdings,loading]=useLoad(()=>request<Holding[]>('/wallet/holdings'),[]),[batches]=useLoad(()=>request<Batch[]>('/credits/batches?limit=100'),[]),[ledgerResult]=useLoad(()=>requestPage<Ledger[]>(`/wallet/ledger?limit=${PAGE_SIZE}&offset=${ledgerPage*PAGE_SIZE}`),{data:[],total:0},[ledgerPage]),ledger=ledgerResult.data
+  const [holdings,loading]=useLoad(()=>request<Holding[]>('/wallet/holdings'),[]),[batches]=useLoad(()=>request<Batch[]>('/credits/batches?limit=100'),[]),[ledgerResult]=useLoad(async()=>{const chain=await request<ChainConfig>('/chain/config');return chain.enabled?{data:[] as Ledger[],total:0,available:false}:{...await requestPage<Ledger[]>(`/wallet/ledger?limit=${PAGE_SIZE}&offset=${ledgerPage*PAGE_SIZE}`),available:true}},{data:[],total:0,available:false},[ledgerPage]),ledger=ledgerResult.data
   const batchMap=useMemo(()=>Object.fromEntries(batches.map(b=>[b.id,b])),[batches]), total=holdings.reduce((s,h)=>s+Number(h.quantity),0), locked=holdings.reduce((s,h)=>s+Number(h.locked_quantity),0)
   const copy=(v:string)=>navigator.clipboard.writeText(v).then(()=>notify('批次编号已复制'))
   return <><PageIntro eyebrow="SELF-CUSTODY WALLET" title="我的链上碳资产" text="余额来自已绑定钱包；平台无法代签、转移或冻结您的个人资产。"/>
     <section className="wallet-summary"><div><span>资产总量</span><strong>{fmt(total)}</strong><small>tCO₂e</small></div><div><span>可用余额</span><strong>{fmt(total-locked)}</strong><small>tCO₂e</small></div><div><span>挂单锁定</span><strong>{fmt(locked)}</strong><small>tCO₂e</small></div></section>
     <section className="two-column"><div className="card"><div className="card-head"><div><span className="eyebrow">PORTFOLIO</span><h3>资产持仓</h3></div></div>{loading?<Loader/>:holdings.length?<div className="holding-list">{holdings.map(h=>{const b=batchMap[h.batch_id];return <div className="holding-card" key={h.batch_id}><div className="batch-seal"><Icon name="leaf"/></div><div className="holding-main"><span>{b?`${b.vintage} · ${b.methodology}`:'碳额度批次'}</span><strong>{fmt(h.quantity)} <small>tCO₂e</small></strong><button className="copy-id" onClick={()=>copy(h.batch_id)}>{short(h.batch_id,12)} <Icon name="copy" size={13}/></button></div><div className="availability"><span>可用 {fmt(Number(h.quantity)-Number(h.locked_quantity))}</span><div><i style={{width:`${Number(h.quantity)?(Number(h.quantity)-Number(h.locked_quantity))/Number(h.quantity)*100:0}%`}}/></div><small>锁定 {fmt(h.locked_quantity)}</small></div></div>})}</div>:<Empty title="暂无碳资产" text="额度签发或市场购买完成后，资产将显示在这里。"/>}</div>
-      <div className="card"><div className="card-head"><div><span className="eyebrow">LEDGER</span><h3>资产流水</h3></div></div>{ledger.length?<><div className="timeline">{ledger.map(l=><div key={l.id}><span className={`flow-dot ${Number(l.quantity_delta)>=0?'in':'out'}`}>{Number(l.quantity_delta)>=0?'+':'−'}</span><div><strong>{{issue:'额度签发',trade_in:'市场买入',trade_out:'市场卖出',retire:'永久注销'}[l.kind]||l.kind}</strong><small>{date(l.created_at)} · {short(l.batch_id,6)}</small></div><b className={Number(l.quantity_delta)>=0?'positive':'negative'}>{Number(l.quantity_delta)>0?'+':''}{fmt(l.quantity_delta)} t</b></div>)}</div><Pagination page={ledgerPage} total={ledgerResult.total} pageSize={PAGE_SIZE} onChange={setLedgerPage}/></>:<Empty title="暂无资产流水" text="资产发生变化时会留下完整记录。"/>}</div></section>
+      <div className="card"><div className="card-head"><div><span className="eyebrow">LEDGER</span><h3>资产流水</h3></div></div>{ledger.length?<><div className="timeline">{ledger.map(l=><div key={l.id}><span className={`flow-dot ${Number(l.quantity_delta)>=0?'in':'out'}`}>{Number(l.quantity_delta)>=0?'+':'−'}</span><div><strong>{{issue:'额度签发',trade_in:'市场买入',trade_out:'市场卖出',retire:'永久注销'}[l.kind]||l.kind}</strong><small>{date(l.created_at)} · {short(l.batch_id,6)}</small></div><b className={Number(l.quantity_delta)>=0?'positive':'negative'}>{Number(l.quantity_delta)>0?'+':''}{fmt(l.quantity_delta)} t</b></div>)}</div><Pagination page={ledgerPage} total={ledgerResult.total} pageSize={PAGE_SIZE} onChange={setLedgerPage}/></>:<Empty title={ledgerResult.available?'暂无资产流水':'链上流水暂未汇总'} text={ledgerResult.available?'资产发生变化时会留下完整记录。':'请在钱包或区块浏览器查看交易记录；上方余额来自链上。'}/>}</div></section>
   </>
 }
 

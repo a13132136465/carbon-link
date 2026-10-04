@@ -12,3 +12,49 @@
 @media(max-width:900px){.dex-market-layout{grid-template-columns:1fr}.dex-pairs{position:static;display:flex;overflow:auto}.dex-pairs>header{min-width:130px}.dex-pairs>button{min-width:150px;border-top:0;border-left:1px solid var(--dex-border)}.dex-pairs>button.active{box-shadow:inset 0 -3px var(--green)}.dex-terminal-grid{grid-template-columns:1fr;grid-template-areas:'chart' 'book' 'ticket' 'tape'}.dex-orderbook{min-height:505px}.dex-heading{align-items:flex-start;gap:15px}.dex-tag{display:none}}
 @media(max-width:600px){.dex-heading h2{font-size:24px}.dex-heading p{line-height:1.6}.dex-pairbar{grid-template-columns:1fr 1fr}.dex-pairbar>div:nth-child(3){display:none}.dex-chart{min-height:350px}.dex-chart-canvas{height:290px}.dex-ob-head,.dex-ob-row{grid-template-columns:1.15fr 1fr .45fr 42px}.dex-intervals{max-width:155px;overflow:auto}.dex-history{margin-top:10px}}
 .dex-asset-select{display:block;width:100%;margin-top:6px;padding:10px;border:1px solid #d8e0db;border-radius:7px;background:#fafcfb;color:var(--dex-text);font-size:9px;outline:0}.dex-asset-select:focus{border-color:#499079;box-shadow:0 0 0 3px #176b5212}.enterprise-page .dex-asset-select{background:#0b2326;border-color:#6d9a8c42;color:var(--dex-text)}
+
+/* Keep trading controls and scroll surfaces consistent with the terminal theme. */
+.dex{--dex-focus:#499079;--dex-hover:#edf4f0;--dex-thumb:#a3b9af;--dex-thumb-hover:#6f9584}
+.enterprise-page .dex{color-scheme:dark;--dex-focus:#83d7b2;--dex-hover:#173b3c;--dex-thumb:#365e58;--dex-thumb-hover:#63998a;--dex-buy:#79d6af;--dex-sell:#e69a83}
+.dex-ticket label{color:var(--dex-muted);font-size:11px}
+.dex-asset-select{appearance:none;min-height:44px;padding:11px 34px 11px 12px;border-radius:10px;font-size:11px;line-height:1.5;text-overflow:ellipsis;cursor:pointer;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' fill='none'%3E%3Cpath d='m4 6 4 4 4-4' stroke='%2380a39a' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center;transition:border-color .18s,box-shadow .18s,background-color .18s}
+.enterprise-page .dex-asset-select{background-color:var(--dex-soft);background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' fill='none'%3E%3Cpath d='m4 6 4 4 4-4' stroke='%2380a39a' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center}
+.dex-asset-select option{background:var(--dex-soft);color:var(--dex-text)}
+.dex-asset-select:enabled:hover{border-color:var(--dex-thumb-hover)}
+.dex-asset-select:focus-visible,.dex-price-input:focus-within{border-color:var(--dex-focus);box-shadow:0 0 0 3px color-mix(in srgb,var(--dex-focus) 13%,transparent)}
+.dex-asset-select:disabled,.dex-ticket fieldset:disabled .dex-price-input{opacity:.45;cursor:not-allowed}
+.dex-amount-field{margin-bottom:14px}.dex-amount-field>label{margin-bottom:6px}
+.dex-price-input{min-height:46px;border-radius:10px;transition:border-color .18s,box-shadow .18s,background-color .18s}
+.dex-price-input:hover{border-color:var(--dex-thumb-hover)}
+.dex-price-input input{appearance:textfield;-moz-appearance:textfield;min-height:44px;padding:11px 12px;font-size:13px;font-variant-numeric:tabular-nums}
+.dex-price-input input::-webkit-inner-spin-button,.dex-price-input input::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
+.dex-price-input input::placeholder{color:var(--dex-muted);opacity:.6}
+.dex-price-input>span{flex-shrink:0;padding:0 10px 0 4px;font-size:10px;white-space:nowrap}
+.dex-input-steps{align-self:stretch;display:grid;grid-template-rows:1fr 1fr;width:28px;flex-shrink:0;border-left:1px solid var(--dex-border)}
+.dex-input-steps button{border:0;background:transparent;color:var(--dex-muted);font-size:13px;line-height:1;padding:2px;transition:background-color .16s,color .16s}
+.dex-input-steps button+button{border-top:1px solid var(--dex-border)}
+.dex-input-steps button:enabled:hover{background:var(--dex-hover);color:var(--dex-text)}
+.dex-input-steps button:disabled{opacity:.35;cursor:not-allowed}
+.dex :is(button,select):focus-visible,.dex-ob-side:focus-visible{outline:2px solid var(--dex-focus);outline-offset:2px}
+.dex-input-steps button:focus-visible{outline-offset:-2px}
+.dex-percent{gap:6px}.dex-percent button{padding:7px 2px;border-radius:7px;font-size:10px;transition:background-color .18s,border-color .18s,color .18s}
+.dex-percent button:enabled:hover{background:var(--dex-hover);border-color:var(--dex-focus);color:var(--dex-text)}
+.dex-percent button:disabled{opacity:.4;cursor:not-allowed}
+.dex-ob-side{overflow-x:hidden;overflow-y:auto;scrollbar-gutter:stable;overscroll-behavior-y:contain;outline-offset:-2px}
+.dex-ob-side.asks{justify-content:flex-start}
+.dex-ob-levels{flex:0 0 auto;min-width:0}.dex-ob-side.asks .dex-ob-levels{margin-top:auto}
+.dex-ob-levels>small{display:block;text-align:center;padding:28px 12px;color:var(--dex-muted);font-size:11px}
+.dex-ob-row{min-height:30px;font-variant-numeric:tabular-nums;transition:background-color .16s}
+.dex-ob-row>i{border-radius:3px;transition:width .22s ease}
+.dex-ob-row>span{color:var(--dex-muted)}
+.dex-ob-row>button{min-height:24px;border-radius:6px;transition:background-color .16s,color .16s}
+.enterprise-page .dex-ob-row>button:enabled:hover{background:#285349;color:#d9ebe4}
+.enterprise-page .dex .btn-sell{background:#e69a83;color:#38221c}.enterprise-page .dex .btn-sell:enabled:hover{background:#efad98}
+.dex-midprice{color:var(--dex-buy);font-variant-numeric:tabular-nums;background:var(--dex-soft)}
+.dex :is(.dex-ob-side,.dex-tape-list,.dex-table-wrap){scrollbar-width:thin;scrollbar-color:var(--dex-thumb) transparent}
+.dex :is(.dex-ob-side,.dex-tape-list,.dex-table-wrap)::-webkit-scrollbar{width:6px;height:6px}
+.dex :is(.dex-ob-side,.dex-tape-list,.dex-table-wrap)::-webkit-scrollbar-track{background:transparent}
+.dex :is(.dex-ob-side,.dex-tape-list,.dex-table-wrap)::-webkit-scrollbar-thumb{border-radius:10px;background:var(--dex-thumb)}
+.dex :is(.dex-ob-side,.dex-tape-list,.dex-table-wrap)::-webkit-scrollbar-thumb:hover{background:var(--dex-thumb-hover)}
+@media(pointer:coarse){.dex-input-steps{width:40px}.dex-input-steps button{min-height:28px}.dex-ob-row{min-height:38px}.dex-ob-row>button{min-height:32px}}
+@media(prefers-reduced-motion:reduce){.dex *{transition:none!important;scroll-behavior:auto!important}}

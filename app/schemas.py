@@ -232,8 +232,9 @@ class DashboardListingOut(BaseModel):
     created_at: datetime
 
 class DashboardOut(BaseModel):
-    total_issued: Decimal
-    total_retired: Decimal
+    blockchain_enabled: bool = False
+    total_issued: Decimal | None
+    total_retired: Decimal | None
     open_market_quantity: Decimal
     trade_volume: Decimal
     project_count: int
@@ -282,7 +283,6 @@ class ForgotPasswordIn(BaseModel):
 
 class ForgotPasswordOut(BaseModel):
     message: str
-    reset_token: str | None = None
 
 class ResetPasswordIn(BaseModel):
     token: str = Field(min_length=20, max_length=256)

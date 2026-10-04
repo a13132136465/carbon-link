@@ -1,16 +1,18 @@
 import json
+import hashlib
 import logging
 import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from urllib.request import Request, urlopen
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select, text
+from sqlalchemy.orm import Session
 from web3 import HTTPProvider, Web3
-from web3.exceptions import TransactionNotFound
+from web3.exceptions import TransactionNotFound, Web3RPCError
 
 from app.config import settings
-from app.database import SessionLocal
+from app.database import engine
 from app.models import ChainOperation, CreditBatch, Project
 
 logger = logging.getLogger("carbonlink.chain_worker")
@@ -55,6 +57,8 @@ def utcnow() -> datetime:
 
 class ChainWorker:
     def __init__(self) -> None:
+        if engine.dialect.name != "postgresql":
+            raise RuntimeError("The signing worker requires PostgreSQL account locks")
         if not settings.blockchain_rpc_url:
             raise RuntimeError("BLOCKCHAIN_RPC_URL is required")
         self.w3 = Web3(HTTPProvider(settings.blockchain_rpc_url, request_kwargs={"timeout": settings.blockchain_request_timeout_seconds}))
@@ -101,8 +105,14 @@ class ChainWorker:
             raise RuntimeError("external signer did not return raw_transaction")
         return raw
 
-    def prepare(self, operation: ChainOperation) -> None:
-        nonce = self.w3.eth.get_transaction_count(self.operator, "pending")
+    def prepare(self, operation: ChainOperation, db: Session) -> None:
+        # Caller holds the account advisory lock across prepare/commit/broadcast.
+        reserved = db.scalar(select(func.max(ChainOperation.nonce)).where(
+            ChainOperation.chain_id == settings.blockchain_chain_id,
+            or_(ChainOperation.signer_address == self.operator, ChainOperation.signer_address.is_(None)),
+            ChainOperation.raw_transaction.is_not(None),
+        ))
+        nonce = max(self.w3.eth.get_transaction_count(self.operator, "pending"), (reserved + 1) if reserved is not None else 0)
         transaction = self._function(operation).build_transaction({
             "from": self.operator,
             "nonce": nonce,
@@ -116,6 +126,7 @@ class ChainWorker:
             signed = self.w3.eth.account.sign_transaction(transaction, settings.blockchain_operator_private_key)
             raw = Web3.to_hex(signed.raw_transaction)
             tx_hash = Web3.to_hex(signed.hash)
+        operation.signer_address = self.operator
         operation.nonce = nonce
         operation.raw_transaction = raw
         operation.transaction_hash = tx_hash
@@ -126,12 +137,12 @@ class ChainWorker:
         try:
             tx_hash = self.w3.eth.send_raw_transaction(operation.raw_transaction)
             operation.transaction_hash = Web3.to_hex(tx_hash)
-        except ValueError as exc:
+        except (ValueError, Web3RPCError) as exc:
             message = str(exc).lower()
             if not any(marker in message for marker in ("already known", "known transaction")):
                 raise
         operation.status = "submitted"
-        operation.submitted_at = utcnow()
+        operation.submitted_at = operation.submitted_at or utcnow()
         operation.error_message = None
 
     def confirm(self, db, operation: ChainOperation) -> None:
@@ -142,8 +153,10 @@ class ChainWorker:
             if submitted_at and submitted_at.tzinfo is None:
                 submitted_at = submitted_at.replace(tzinfo=timezone.utc)
             if submitted_at and utcnow() - submitted_at > timedelta(seconds=60):
-                operation.status = "prepared"
-                operation.next_attempt_at = utcnow()
+                # Re-send exactly the persisted transaction; never sign a replacement here.
+                self.broadcast(operation)
+                if utcnow() - submitted_at > timedelta(seconds=settings.blockchain_transaction_timeout_seconds):
+                    operation.error_message = "Confirmation timeout; inspect the transaction and signer nonce before recovery"
             return
         if receipt.status != 1:
             operation.status = "failed"
@@ -151,7 +164,14 @@ class ChainWorker:
             operation.block_number = receipt.blockNumber
             return
         confirmations = self.w3.eth.block_number - receipt.blockNumber + 1
+        if confirmations < settings.blockchain_confirmations:
+            started = operation.submitted_at
+            if started and started.tzinfo is None:
+                started = started.replace(tzinfo=timezone.utc)
+            if started and utcnow() - started > timedelta(seconds=settings.blockchain_transaction_timeout_seconds):
+                operation.error_message = "Confirmation timeout; waiting for finality"
         if confirmations >= settings.blockchain_confirmations:
+            operation.error_message = None
             operation.status = "confirmed"
             operation.block_number = receipt.blockNumber
             operation.confirmed_at = utcnow()
@@ -166,39 +186,83 @@ class ChainWorker:
                 if record: record.chain_batch_id = batch_id
 
     def run_once(self) -> bool:
-        with SessionLocal() as db:
-            submitted = db.scalar(select(ChainOperation).where(ChainOperation.status == "submitted").order_by(ChainOperation.submitted_at).limit(1))
-            if submitted:
-                self.confirm(db, submitted)
-                db.commit()
-                return True
-            operation = db.scalar(select(ChainOperation).where(
-                ChainOperation.status.in_(("pending", "prepared")),
-                or_(ChainOperation.next_attempt_at.is_(None), ChainOperation.next_attempt_at <= utcnow()),
-            ).order_by(ChainOperation.created_at).with_for_update(skip_locked=True).limit(1))
-            if not operation:
+        # Session-level PostgreSQL lock survives the durable prepare commit.
+        # A row lock alone cannot coordinate two different outbox operations.
+        if engine.dialect.name != "postgresql":
+            raise RuntimeError("The signing worker requires PostgreSQL account locks")
+        identity = f"{settings.blockchain_chain_id}:{self.operator.lower()}".encode()
+        lock_id = int.from_bytes(hashlib.sha256(identity).digest()[:8], "big", signed=True)
+        with engine.connect() as connection:
+            acquired = connection.scalar(text("SELECT pg_try_advisory_lock(:key)"), {"key": lock_id})
+            connection.commit()
+            if not acquired:
                 return False
             try:
-                operation.attempts += 1
-                if operation.status == "pending":
-                    self.prepare(operation)
-                    db.commit()
-                self.broadcast(operation)
+                with Session(bind=connection, expire_on_commit=False) as db:
+                    return self._run_locked(db)
+            finally:
+                connection.rollback()
+                connection.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": lock_id})
+                connection.commit()
+
+    def _failure(self, db, operation_id: str, error: Exception) -> None:
+        db.rollback()
+        operation = db.get(ChainOperation, operation_id)
+        operation.attempts += 1
+        operation.error_message = str(error)[:2000]
+        operation.next_attempt_at = utcnow() + timedelta(seconds=min(300, 2 ** min(operation.attempts, 8)))
+        if operation.status != "submitted" and operation.attempts >= settings.blockchain_worker_max_attempts:
+            # Signed transactions may still land. Retain their nonce and require
+            # reconciliation instead of treating a broadcast timeout as failure.
+            operation.status = "needs_attention" if operation.raw_transaction else "failed"
+        db.commit()
+        logger.warning("Chain operation %s deferred (%s)", operation_id, type(error).__name__)
+
+    def _run_locked(self, db: Session) -> bool:
+        scope = (ChainOperation.chain_id == settings.blockchain_chain_id,
+                 or_(ChainOperation.signer_address == self.operator, ChainOperation.signer_address.is_(None)))
+        due = or_(ChainOperation.next_attempt_at.is_(None), ChainOperation.next_attempt_at <= utcnow())
+        submitted = db.scalar(select(ChainOperation).where(*scope, ChainOperation.status.in_(("submitted", "needs_attention")), due)
+                              .order_by(ChainOperation.next_attempt_at.asc().nullsfirst(), ChainOperation.created_at).limit(1))
+        worked = submitted is not None
+        if submitted:
+            operation_id = submitted.id
+            try:
+                self.confirm(db, submitted)
+                if submitted.status in ("submitted", "needs_attention"):
+                    submitted.next_attempt_at = utcnow() + timedelta(seconds=settings.blockchain_worker_poll_seconds)
                 db.commit()
             except Exception as exc:
-                attempts = operation.attempts
-                operation_id = operation.id
-                db.rollback()
-                operation = db.get(ChainOperation, operation_id)
-                operation.attempts = attempts
-                operation.error_message = str(exc)[:2000]
-                if operation.attempts >= settings.blockchain_worker_max_attempts:
-                    operation.status = "failed"
-                else:
-                    operation.next_attempt_at = utcnow() + timedelta(seconds=min(300, 2 ** min(operation.attempts, 8)))
+                self._failure(db, operation_id, exc)
+        # Check confirmations and new work in the same tick; a slow receipt does
+        # not starve unrelated tasks. Unbroadcast signed work must be resolved first.
+        blocked = db.scalar(select(ChainOperation).where(*scope,
+            ChainOperation.raw_transaction.is_not(None),
+            ChainOperation.status.in_(("prepared", "needs_attention"))).order_by(ChainOperation.nonce).limit(1))
+        if blocked:
+            next_at = blocked.next_attempt_at
+            if next_at and next_at.tzinfo is None:
+                next_at = next_at.replace(tzinfo=timezone.utc)
+            if blocked.status == "needs_attention" or (next_at and next_at > utcnow()):
+                return worked
+            operation = blocked
+        else:
+            operation = db.scalar(select(ChainOperation).where(*scope, ChainOperation.status == "pending", due)
+                                  .order_by(ChainOperation.created_at).limit(1))
+        if not operation:
+            return worked
+        operation_id = operation.id
+        try:
+            if operation.status == "pending":
+                self.prepare(operation, db)
                 db.commit()
-                logger.exception("chain operation %s failed", operation.id)
-            return True
+            operation.attempts += 1
+            self.broadcast(operation)
+            db.commit()
+        except Exception as exc:
+            self._failure(db, operation_id, exc)
+        return True
+
 
 def main() -> None:
     logging.basicConfig(level=settings.log_level, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -209,7 +273,11 @@ def main() -> None:
     worker = ChainWorker()
     logger.info("chain worker started for %s (%s)", settings.blockchain_name, settings.blockchain_chain_id)
     while True:
-        worked = worker.run_once()
+        try:
+            worked = worker.run_once()
+        except Exception:
+            logger.exception("Worker infrastructure failure; retrying")
+            worked = False
         time.sleep(0.5 if worked else settings.blockchain_worker_poll_seconds)
 
 if __name__ == "__main__":
