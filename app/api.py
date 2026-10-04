@@ -163,7 +163,8 @@ def user_chain_config(_: User = Depends(current_user)):
     return ChainConfigOut(enabled=settings.blockchain_enabled, network=settings.blockchain_name,
         chain_id=settings.blockchain_chain_id, confirmations=settings.blockchain_confirmations, rpc_url=settings.blockchain_rpc_url,
         credit_contract_address=settings.carbon_credit_contract_address,
-        marketplace_contract_address=settings.carbon_marketplace_contract_address)
+        marketplace_contract_address=settings.carbon_marketplace_contract_address,
+        usdc_contract_address=settings.usdc_contract_address)
 
 @router.post("/users/me/password", response_model=MessageOut)
 def change_password(body: ChangePasswordIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
@@ -532,9 +533,9 @@ def dashboard(_: User = Depends(current_user), db: Session = Depends(get_db)):
 
 @router.get("/system/blockchain", response_model=BlockchainConfigOut)
 def blockchain_config(_: User = Depends(require_roles(Role.ADMIN))):
-    configured = all((settings.blockchain_rpc_url, settings.carbon_project_contract_address, settings.carbon_credit_contract_address, settings.carbon_marketplace_contract_address, settings.blockchain_operator_address)) and bool(settings.blockchain_operator_private_key or settings.blockchain_signer_url)
+    configured = all((settings.blockchain_rpc_url, settings.carbon_project_contract_address, settings.carbon_credit_contract_address, settings.carbon_marketplace_contract_address, settings.usdc_contract_address, settings.blockchain_operator_address)) and bool(settings.blockchain_operator_private_key or settings.blockchain_signer_url)
     signing_mode = "disabled" if not settings.blockchain_enabled else "external_signer" if settings.blockchain_signer_url else "local_signer" if settings.blockchain_operator_private_key else "not_configured"
-    return BlockchainConfigOut(enabled=settings.blockchain_enabled, configured=configured, network=settings.blockchain_name, chain_id=settings.blockchain_chain_id, rpc_url=settings.blockchain_rpc_url, confirmations=settings.blockchain_confirmations, project_contract_address=settings.carbon_project_contract_address, credit_contract_address=settings.carbon_credit_contract_address, marketplace_contract_address=settings.carbon_marketplace_contract_address, operator_address=settings.blockchain_operator_address, signing_mode=signing_mode)
+    return BlockchainConfigOut(enabled=settings.blockchain_enabled, configured=configured, network=settings.blockchain_name, chain_id=settings.blockchain_chain_id, rpc_url=settings.blockchain_rpc_url, confirmations=settings.blockchain_confirmations, project_contract_address=settings.carbon_project_contract_address, credit_contract_address=settings.carbon_credit_contract_address, marketplace_contract_address=settings.carbon_marketplace_contract_address, usdc_contract_address=settings.usdc_contract_address, operator_address=settings.blockchain_operator_address, signing_mode=signing_mode)
 
 @router.get("/system/blockchain/operations", response_model=list[ChainOperationOut])
 def blockchain_operations(response: Response, status: str | None = None, offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100), _: User = Depends(require_roles(Role.ADMIN)), db: Session = Depends(get_db)):

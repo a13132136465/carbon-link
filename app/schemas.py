@@ -49,6 +49,7 @@ class ChainConfigOut(BaseModel):
     rpc_url: str | None
     credit_contract_address: str | None
     marketplace_contract_address: str | None
+    usdc_contract_address: str | None
 
 class ProjectIn(BaseModel):
     name: str = Field(min_length=2, max_length=200)
@@ -240,6 +241,7 @@ class BlockchainConfigOut(BaseModel):
     project_contract_address: str | None
     credit_contract_address: str | None
     marketplace_contract_address: str | None
+    usdc_contract_address: str | None
     operator_address: str | None
     signing_mode: str
 

@@ -31,7 +31,10 @@ def instruments(db: Session = Depends(get_db)):
     currencies: dict[str, list[str]] = {}
     for batch_id, currency in db.execute(select(Listing.batch_id, Listing.currency).distinct()):
         currencies.setdefault(batch_id, []).append(currency)
-    rows = db.execute(select(CreditBatch, Project.name, Project.region).join(Project, Project.id == CreditBatch.project_id).order_by(CreditBatch.issued_at.desc()))
+    query = select(CreditBatch, Project.name, Project.region).join(Project, Project.id == CreditBatch.project_id)
+    if settings.blockchain_enabled:
+        query = query.where(CreditBatch.chain_batch_id.is_not(None))
+    rows = db.execute(query.order_by(CreditBatch.issued_at.desc()))
     return [{"batch_id": b.id, "name": name, "region": region, "vintage": b.vintage,
              "methodology": b.methodology, "serial_prefix": b.serial_prefix,
              "chain_batch_id": b.chain_batch_id,

@@ -1,115 +1,310 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {AccessControlDefaultAdminRules} from "@openzeppelin/contracts/access/extensions/AccessControlDefaultAdminRules.sol";
-import {ERC1155Holder} from "@openzeppelin/contracts/token/ERC1155/utils/ERC1155Holder.sol";
-import {IERC1155} from "@openzeppelin/contracts/token/ERC1155/IERC1155.sol";
-import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {
+    AccessControlDefaultAdminRules
+} from "@openzeppelin/contracts/access/extensions/AccessControlDefaultAdminRules.sol";
+import { ERC1155Holder } from "@openzeppelin/contracts/token/ERC1155/utils/ERC1155Holder.sol";
+import { IERC1155 } from "@openzeppelin/contracts/token/ERC1155/IERC1155.sol";
+import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import { Pausable } from "@openzeppelin/contracts/utils/Pausable.sol";
+import { ReentrancyGuard } from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-/// @notice Non-custodial order book for CarbonLink credits. Sellers escrow only the
-///         listed amount; buyers pay sellers atomically with the native network token.
-contract CarbonMarketplace is ERC1155Holder, AccessControlDefaultAdminRules, Pausable, ReentrancyGuard {
+/// @notice Self-custodial carbon-credit/USDC order book. Makers escrow only the
+///         asset committed by an order; every create, fill and cancel is user-signed.
+contract CarbonMarketplace is
+    ERC1155Holder,
+    AccessControlDefaultAdminRules,
+    Pausable,
+    ReentrancyGuard
+{
+    using SafeERC20 for IERC20;
+
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
     uint256 public constant CREDIT_SCALE = 10_000;
 
-    struct Listing {
-        address seller;
+    enum Side {
+        Buy,
+        Sell
+    }
+
+    struct Order {
+        address maker;
         uint256 tokenId;
         uint256 remainingAmount;
-        uint256 pricePerCreditWei;
+        uint256 pricePerCredit;
+        uint256 remainingQuote;
+        Side side;
         bool active;
+        uint64 createdAt;
+    }
+
+    struct Trade {
+        uint256 orderId;
+        address buyer;
+        address seller;
+        uint256 tokenId;
+        uint256 amount;
+        uint256 quoteAmount;
+        uint256 pricePerCredit;
+        Side takerSide;
+        uint64 timestamp;
     }
 
     IERC1155 public immutable credits;
-    uint256 public nextListingId = 1;
-    mapping(uint256 listingId => Listing listing) public listings;
+    IERC20 public immutable usdc;
+    uint256 public nextOrderId = 1;
+    mapping(uint256 orderId => Order order) public orders;
     mapping(address seller => mapping(uint256 tokenId => uint256 amount)) public lockedBalance;
-    uint256[] private _activeListingIds;
-    mapping(uint256 listingId => uint256 indexPlusOne) private _activeListingIndex;
+    mapping(address buyer => uint256 amount) public lockedUsdc;
+    uint256[] private _activeOrderIds;
+    mapping(uint256 orderId => uint256 indexPlusOne) private _activeOrderIndex;
+    Trade[] private _trades;
 
+    error InvalidAddress();
     error InvalidAmount();
     error InvalidPrice();
-    error ListingNotActive();
-    error NotSeller();
+    error OrderNotActive();
+    error WrongSide();
+    error NotMaker();
     error SelfTrade();
-    error IncorrectPayment(uint256 expected, uint256 supplied);
-    error PaymentFailed();
 
-    event ListingCreated(uint256 indexed listingId, address indexed seller, uint256 indexed tokenId, uint256 amount, uint256 pricePerCreditWei);
-    event ListingFilled(uint256 indexed listingId, address indexed buyer, address indexed seller, uint256 tokenId, uint256 amount, uint256 totalPaid);
-    event ListingCancelled(uint256 indexed listingId, address indexed seller, uint256 returnedAmount);
+    event OrderCreated(
+        uint256 indexed orderId,
+        address indexed maker,
+        uint256 indexed tokenId,
+        Side side,
+        uint256 amount,
+        uint256 pricePerCredit,
+        uint64 createdAt
+    );
+    event OrderFilled(
+        uint256 indexed orderId,
+        address indexed taker,
+        address indexed maker,
+        uint256 tokenId,
+        Side takerSide,
+        uint256 amount,
+        uint256 quoteAmount,
+        uint256 pricePerCredit,
+        uint64 timestamp
+    );
+    event OrderCancelled(
+        uint256 indexed orderId, address indexed maker, Side side, uint256 returnedAmount
+    );
 
-    constructor(address initialAdmin, uint48 adminTransferDelay, address creditContract)
-        AccessControlDefaultAdminRules(adminTransferDelay, initialAdmin)
-    {
-        if (creditContract == address(0)) revert InvalidAmount();
+    constructor(
+        address initialAdmin,
+        uint48 adminTransferDelay,
+        address creditContract,
+        address usdcContract
+    ) AccessControlDefaultAdminRules(adminTransferDelay, initialAdmin) {
+        if (creditContract == address(0) || usdcContract == address(0)) {
+            revert InvalidAddress();
+        }
         credits = IERC1155(creditContract);
+        usdc = IERC20(usdcContract);
         _grantRole(PAUSER_ROLE, initialAdmin);
     }
 
-    function createListing(uint256 tokenId, uint256 amount, uint256 pricePerCreditWei)
-        external whenNotPaused nonReentrant returns (uint256 listingId)
+    function createSellOrder(uint256 tokenId, uint256 amount, uint256 pricePerCredit)
+        external
+        whenNotPaused
+        nonReentrant
+        returns (uint256 orderId)
     {
-        if (amount == 0) revert InvalidAmount();
-        if (pricePerCreditWei == 0) revert InvalidPrice();
-        listingId = nextListingId++;
-        listings[listingId] = Listing(msg.sender, tokenId, amount, pricePerCreditWei, true);
-        _activeListingIndex[listingId] = _activeListingIds.length + 1;
-        _activeListingIds.push(listingId);
+        _validate(amount, pricePerCredit);
+        orderId = _create(msg.sender, tokenId, amount, pricePerCredit, Side.Sell, 0);
         lockedBalance[msg.sender][tokenId] += amount;
         credits.safeTransferFrom(msg.sender, address(this), tokenId, amount, "");
-        emit ListingCreated(listingId, msg.sender, tokenId, amount, pricePerCreditWei);
     }
 
-    function buy(uint256 listingId, uint256 amount) external payable whenNotPaused nonReentrant {
-        Listing storage listing = listings[listingId];
-        if (!listing.active) revert ListingNotActive();
-        if (msg.sender == listing.seller) revert SelfTrade();
-        if (amount == 0 || amount > listing.remainingAmount) revert InvalidAmount();
-        uint256 payment = (amount * listing.pricePerCreditWei + CREDIT_SCALE - 1) / CREDIT_SCALE;
-        if (msg.value != payment) revert IncorrectPayment(payment, msg.value);
-        listing.remainingAmount -= amount;
-        lockedBalance[listing.seller][listing.tokenId] -= amount;
-        if (listing.remainingAmount == 0) _deactivate(listingId, listing);
-        credits.safeTransferFrom(address(this), msg.sender, listing.tokenId, amount, "");
-        (bool sent,) = payable(listing.seller).call{value: payment}("");
-        if (!sent) revert PaymentFailed();
-        emit ListingFilled(listingId, msg.sender, listing.seller, listing.tokenId, amount, payment);
+    /// @notice Creates a market-wide bid. tokenId zero denotes any issued carbon-credit batch.
+    function createBuyOrder(uint256 amount, uint256 pricePerCredit)
+        external
+        whenNotPaused
+        nonReentrant
+        returns (uint256 orderId)
+    {
+        _validate(amount, pricePerCredit);
+        uint256 quote = quoteFor(amount, pricePerCredit);
+        if (quote == 0) revert InvalidPrice();
+        orderId = _create(msg.sender, 0, amount, pricePerCredit, Side.Buy, quote);
+        lockedUsdc[msg.sender] += quote;
+        usdc.safeTransferFrom(msg.sender, address(this), quote);
     }
 
-    function cancel(uint256 listingId) external nonReentrant {
-        Listing storage listing = listings[listingId];
-        if (!listing.active) revert ListingNotActive();
-        if (listing.seller != msg.sender) revert NotSeller();
-        uint256 amount = listing.remainingAmount;
-        listing.remainingAmount = 0;
-        _deactivate(listingId, listing);
-        lockedBalance[msg.sender][listing.tokenId] -= amount;
-        credits.safeTransferFrom(address(this), msg.sender, listing.tokenId, amount, "");
-        emit ListingCancelled(listingId, msg.sender, amount);
+    /// @notice Buyer takes an existing sell order. Buyer must approve USDC first.
+    function fillSellOrder(uint256 orderId, uint256 amount) external whenNotPaused nonReentrant {
+        Order storage order = orders[orderId];
+        if (!order.active) revert OrderNotActive();
+        if (order.side != Side.Sell) revert WrongSide();
+        if (order.maker == msg.sender) revert SelfTrade();
+        _validateFill(order, amount);
+        uint256 quote = quoteFor(amount, order.pricePerCredit);
+        if (quote == 0) revert InvalidAmount();
+        order.remainingAmount -= amount;
+        lockedBalance[order.maker][order.tokenId] -= amount;
+        if (order.remainingAmount == 0) _deactivate(orderId, order);
+        usdc.safeTransferFrom(msg.sender, order.maker, quote);
+        credits.safeTransferFrom(address(this), msg.sender, order.tokenId, amount, "");
+        _recordTrade(
+            orderId, msg.sender, order.maker, order.tokenId, order, Side.Buy, amount, quote
+        );
     }
 
-    function pause() external onlyRole(PAUSER_ROLE) { _pause(); }
-    function unpause() external onlyRole(PAUSER_ROLE) { _unpause(); }
+    /// @notice Seller takes a market-wide bid and chooses the batch delivered to the buyer.
+    function fillBuyOrder(uint256 orderId, uint256 tokenId, uint256 amount)
+        external
+        whenNotPaused
+        nonReentrant
+    {
+        Order storage order = orders[orderId];
+        if (!order.active) revert OrderNotActive();
+        if (order.side != Side.Buy) revert WrongSide();
+        if (order.maker == msg.sender) revert SelfTrade();
+        _validateFill(order, amount);
+        uint256 quote = amount == order.remainingAmount
+            ? order.remainingQuote
+            : quoteFor(amount, order.pricePerCredit);
+        if (quote == 0 || quote > order.remainingQuote) revert InvalidAmount();
+        order.remainingAmount -= amount;
+        order.remainingQuote -= quote;
+        lockedUsdc[order.maker] -= quote;
+        if (order.remainingAmount == 0) _deactivate(orderId, order);
+        credits.safeTransferFrom(msg.sender, order.maker, tokenId, amount, "");
+        usdc.safeTransfer(msg.sender, quote);
+        _recordTrade(orderId, order.maker, msg.sender, tokenId, order, Side.Sell, amount, quote);
+    }
 
-    function activeListingCount() external view returns (uint256) { return _activeListingIds.length; }
-    function activeListingIdAt(uint256 index) external view returns (uint256) { return _activeListingIds[index]; }
-
-    function _deactivate(uint256 listingId, Listing storage listing) private {
-        listing.active = false;
-        uint256 index = _activeListingIndex[listingId] - 1;
-        uint256 lastId = _activeListingIds[_activeListingIds.length - 1];
-        if (lastId != listingId) {
-            _activeListingIds[index] = lastId;
-            _activeListingIndex[lastId] = index + 1;
+    function cancel(uint256 orderId) external nonReentrant {
+        Order storage order = orders[orderId];
+        if (!order.active) revert OrderNotActive();
+        if (order.maker != msg.sender) revert NotMaker();
+        uint256 returned;
+        if (order.side == Side.Sell) {
+            returned = order.remainingAmount;
+            lockedBalance[msg.sender][order.tokenId] -= returned;
+            credits.safeTransferFrom(address(this), msg.sender, order.tokenId, returned, "");
+        } else {
+            returned = order.remainingQuote;
+            lockedUsdc[msg.sender] -= returned;
+            usdc.safeTransfer(msg.sender, returned);
         }
-        _activeListingIds.pop();
-        delete _activeListingIndex[listingId];
+        order.remainingAmount = 0;
+        order.remainingQuote = 0;
+        _deactivate(orderId, order);
+        emit OrderCancelled(orderId, msg.sender, order.side, returned);
+    }
+
+    function quoteFor(uint256 amount, uint256 pricePerCredit) public pure returns (uint256) {
+        return amount * pricePerCredit / CREDIT_SCALE;
+    }
+
+    function activeOrderCount() external view returns (uint256) {
+        return _activeOrderIds.length;
+    }
+
+    function activeOrderIdAt(uint256 index) external view returns (uint256) {
+        return _activeOrderIds[index];
+    }
+
+    function tradeCount() external view returns (uint256) {
+        return _trades.length;
+    }
+
+    function tradeAt(uint256 index) external view returns (Trade memory) {
+        return _trades[index];
+    }
+
+    function pause() external onlyRole(PAUSER_ROLE) {
+        _pause();
+    }
+
+    function unpause() external onlyRole(PAUSER_ROLE) {
+        _unpause();
+    }
+
+    function _create(
+        address maker,
+        uint256 tokenId,
+        uint256 amount,
+        uint256 price,
+        Side side,
+        uint256 quote
+    ) private returns (uint256 orderId) {
+        orderId = nextOrderId++;
+        uint64 createdAt = uint64(block.timestamp);
+        orders[orderId] = Order(maker, tokenId, amount, price, quote, side, true, createdAt);
+        _activeOrderIndex[orderId] = _activeOrderIds.length + 1;
+        _activeOrderIds.push(orderId);
+        emit OrderCreated(orderId, maker, tokenId, side, amount, price, createdAt);
+    }
+
+    function _recordTrade(
+        uint256 orderId,
+        address buyer,
+        address seller,
+        uint256 tokenId,
+        Order storage order,
+        Side takerSide,
+        uint256 amount,
+        uint256 quote
+    ) private {
+        uint64 timestamp = uint64(block.timestamp);
+        _trades.push(
+            Trade(
+                orderId,
+                buyer,
+                seller,
+                tokenId,
+                amount,
+                quote,
+                order.pricePerCredit,
+                takerSide,
+                timestamp
+            )
+        );
+        emit OrderFilled(
+            orderId,
+            takerSide == Side.Buy ? buyer : seller,
+            order.maker,
+            tokenId,
+            takerSide,
+            amount,
+            quote,
+            order.pricePerCredit,
+            timestamp
+        );
+    }
+
+    function _validate(uint256 amount, uint256 price) private pure {
+        if (amount == 0) revert InvalidAmount();
+        if (price == 0) revert InvalidPrice();
+    }
+
+    function _validateFill(Order storage order, uint256 amount) private view {
+        if (amount == 0 || amount > order.remainingAmount) revert InvalidAmount();
+    }
+
+    function _deactivate(uint256 orderId, Order storage order) private {
+        order.active = false;
+        uint256 index = _activeOrderIndex[orderId] - 1;
+        uint256 lastId = _activeOrderIds[_activeOrderIds.length - 1];
+        if (lastId != orderId) {
+            _activeOrderIds[index] = lastId;
+            _activeOrderIndex[lastId] = index + 1;
+        }
+        _activeOrderIds.pop();
+        delete _activeOrderIndex[orderId];
     }
 
     function supportsInterface(bytes4 interfaceId)
-        public view override(ERC1155Holder, AccessControlDefaultAdminRules) returns (bool)
+        public
+        view
+        override(ERC1155Holder, AccessControlDefaultAdminRules)
+        returns (bool)
     {
         return super.supportsInterface(interfaceId);
     }

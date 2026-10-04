@@ -5,11 +5,13 @@ import { Test } from "forge-std/Test.sol";
 import { CarbonProjectRegistry } from "../src/CarbonProjectRegistry.sol";
 import { CarbonCreditLedger } from "../src/CarbonCreditLedger.sol";
 import { CarbonMarketplace } from "../src/CarbonMarketplace.sol";
+import { TestUSDC } from "../src/TestUSDC.sol";
 
 contract CarbonLinkTest is Test {
     CarbonProjectRegistry internal registry;
     CarbonCreditLedger internal credits;
     CarbonMarketplace internal marketplace;
+    TestUSDC internal usdc;
     address internal admin = makeAddr("admin");
     address internal issuer = makeAddr("issuer");
     address internal verifier = makeAddr("verifier");
@@ -21,12 +23,15 @@ contract CarbonLinkTest is Test {
         vm.startPrank(admin);
         registry = new CarbonProjectRegistry(admin, issuer, 2 days);
         credits = new CarbonCreditLedger(admin, issuer, 2 days, address(registry));
-        marketplace = new CarbonMarketplace(admin, 2 days, address(credits));
+        usdc = new TestUSDC(admin, 0);
+        marketplace = new CarbonMarketplace(admin, 2 days, address(credits), address(usdc));
         registry.grantRole(registry.REGISTRAR_ROLE(), issuer);
         registry.grantRole(registry.VERIFIER_ROLE(), verifier);
         credits.grantRole(credits.ISSUER_ROLE(), issuer);
         credits.grantRole(credits.VERIFIER_ROLE(), verifier);
         vm.stopPrank();
+        vm.prank(admin);
+        usdc.mint(buyer, 1_000_000e6);
 
         vm.prank(issuer);
         projectId = registry.registerProject(
@@ -34,28 +39,72 @@ contract CarbonLinkTest is Test {
         );
     }
 
-    function testUsersSignAtomicMarketplaceTrade() public {
+    function testUsersSignUSDCOrderBookTrades() public {
         uint256 batchId = _issue(10 * 10_000);
         vm.prank(owner);
         credits.setApprovalForAll(address(marketplace), true);
         vm.prank(owner);
-        uint256 listingId = marketplace.createListing(batchId, 2 * 10_000, 1 ether);
-        assertEq(marketplace.activeListingCount(), 1);
-        assertEq(marketplace.activeListingIdAt(0), listingId);
+        uint256 sellId = marketplace.createSellOrder(batchId, 2 * 10_000, 25e6);
+        assertEq(marketplace.activeOrderCount(), 1);
+        assertEq(marketplace.activeOrderIdAt(0), sellId);
         assertEq(credits.balanceOf(owner, batchId), 8 * 10_000);
         assertEq(marketplace.lockedBalance(owner, batchId), 2 * 10_000);
 
-        vm.deal(buyer, 2 ether);
         vm.prank(buyer);
-        marketplace.buy{value: 1 ether}(listingId, 1 * 10_000);
+        usdc.approve(address(marketplace), type(uint256).max);
+        vm.prank(buyer);
+        marketplace.fillSellOrder(sellId, 1 * 10_000);
         assertEq(credits.balanceOf(buyer, batchId), 1 * 10_000);
+        assertEq(usdc.balanceOf(owner), 25e6);
         assertEq(marketplace.lockedBalance(owner, batchId), 1 * 10_000);
 
         vm.prank(owner);
-        marketplace.cancel(listingId);
+        marketplace.cancel(sellId);
         assertEq(credits.balanceOf(owner, batchId), 9 * 10_000);
         assertEq(marketplace.lockedBalance(owner, batchId), 0);
-        assertEq(marketplace.activeListingCount(), 0);
+        assertEq(marketplace.activeOrderCount(), 0);
+
+        vm.prank(buyer);
+        uint256 buyId = marketplace.createBuyOrder(2 * 10_000, 24e6);
+        assertEq(marketplace.lockedUsdc(buyer), 48e6);
+        vm.prank(owner);
+        marketplace.fillBuyOrder(buyId, batchId, 1 * 10_000);
+        assertEq(credits.balanceOf(buyer, batchId), 2 * 10_000);
+        assertEq(usdc.balanceOf(owner), 49e6);
+        assertEq(marketplace.tradeCount(), 2);
+        CarbonMarketplace.Trade memory trade = marketplace.tradeAt(1);
+        assertEq(trade.pricePerCredit, 24e6);
+        assertEq(trade.tokenId, batchId);
+        assertEq(uint256(trade.takerSide), uint256(CarbonMarketplace.Side.Sell));
+    }
+
+    function testSharedPairBidAcceptsAnyIssuedBatch() public {
+        _issue(10 * 10_000);
+        vm.prank(issuer);
+        uint256 secondBatchId = credits.issueBatch(
+            owner,
+            projectId,
+            keccak256("AUD-2026-002"),
+            2025,
+            5 * 10_000,
+            keccak256("second batch metadata"),
+            "ipfs://batch/second.json"
+        );
+
+        vm.prank(buyer);
+        usdc.approve(address(marketplace), type(uint256).max);
+        vm.prank(buyer);
+        uint256 buyId = marketplace.createBuyOrder(2 * 10_000, 20e6);
+
+        vm.prank(owner);
+        credits.setApprovalForAll(address(marketplace), true);
+        vm.prank(owner);
+        marketplace.fillBuyOrder(buyId, secondBatchId, 2 * 10_000);
+
+        assertEq(credits.balanceOf(buyer, secondBatchId), 2 * 10_000);
+        CarbonMarketplace.Trade memory trade = marketplace.tradeAt(0);
+        assertEq(trade.tokenId, secondBatchId);
+        assertEq(trade.pricePerCredit, 20e6);
     }
 
     function testRegisterProjectAndLookup() public view {

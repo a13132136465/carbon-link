@@ -8,7 +8,7 @@ CarbonLink 是从 `carbin-ai` 教学原型演进而来的自托管碳资产系�
 - 碳项目申报、提交、核证通过或驳回，以及完整审计事件。
 - 用户使用签名挑战绑定自托管 EVM 地址，平台不生成或保存用户私钥。
 - 项目核证后，项目 NFT 和 ERC-1155 碳额度直接登记或发行到项目方钱包。
-- 去中心化市场支持用户签名授权、挂单、部分购买和撤单；碳额度与网络原生代币在同一笔交易中原子结算。
+- 去中心化市场支持用户签名买单、卖单、部分成交和撤单；碳积分与 USDC 在同一笔交易中原子结算。
 - 永久注销与公开查询的唯一注销证书。
 - 关键发行、购买和注销接口要求 `Idempotency-Key`，防止客户端重试造成重复处理。
 - PostgreSQL、Alembic 迁移、健康检查、非 root 容器、Docker Compose 和端到端测试。
@@ -50,7 +50,7 @@ docker run --rm carbon-link-test
 
 ## 业务边界
 
-平台数据库保存身份、材料、审批和可检索的证书数据，不再作为资产余额或成交结算的权威账本。市场合约托管卖方主动挂出的数量；买方交易同时完成 ERC-1155 交割和网络原生代币付款。当前合约不处理法币或稳定币，若需要稳定计价，应另行接入经过审计的 ERC-20 结算资产。
+平台数据库保存身份、材料、审批和可检索的证书数据，不再作为资产余额或成交结算的权威账本。所有经过审批并完成链上签发的碳积分共享唯一的 `CARBON/USDC` 交易对、订单簿和市场价格。卖单记录并托管实际交付的 ERC-1155 批次，买单接受任意合格批次并托管 USDC；成交在同一笔链上交易中完成两种资产的原子交割。
 
 ## 区块链配置
 
@@ -59,6 +59,7 @@ docker run --rm carbon-link-test
 - `BLOCKCHAIN_ENABLED`：是否启用 EVM 链上适配器。
 - `BLOCKCHAIN_RPC_URL`、`BLOCKCHAIN_CHAIN_ID`、`BLOCKCHAIN_NAME`：网络连接信息，默认网络参数为 Avalanche Fuji（43113）。
 - `CARBON_PROJECT_CONTRACT_ADDRESS`、`CARBON_CREDIT_CONTRACT_ADDRESS`、`CARBON_MARKETPLACE_CONTRACT_ADDRESS`：项目 NFT、碳积分和去中心化市场合约地址。
+- `USDC_CONTRACT_ADDRESS`：市场使用的 USDC ERC-20 合约地址（6 位精度）。
 - `BLOCKCHAIN_OPERATOR_ADDRESS`：链上操作账户。
 - `BLOCKCHAIN_SIGNER_URL`：推荐的生产签名服务地址；或者在本地测试中使用 `BLOCKCHAIN_OPERATOR_PRIVATE_KEY`，两者至少配置一个。
 - `BLOCKCHAIN_CONFIRMATIONS`、`BLOCKCHAIN_REQUEST_TIMEOUT_SECONDS`：确认数与 RPC 超时。
@@ -73,7 +74,7 @@ docker run --rm carbon-link-test
 
 - `CarbonProjectRegistry.sol`：ERC-721 项目登记、状态管理、元数据承诺和紧急暂停。
 - `CarbonCreditLedger.sol`：ERC-1155 批次发行、转移、冻结和永久注销。
-- `CarbonMarketplace.sol`：用户签名挂单、合约托管和原生代币原子结算。
+- `CarbonMarketplace.sol`：双边限价订单簿、用户签名挂单、按单托管与碳积分/USDC 原子结算。
 - `DeployCarbonLink.s.sol`：角色分离的部署脚本。
 - `DeployMarketplace.s.sol`：为已有项目/额度合约单独部署市场的滚动升级脚本。
 - `CarbonLink.t.sol`：权限、安全状态、发行、转移、注销及模糊测试。

@@ -11,4 +11,8 @@ carbon-link-front/dist/
 carbon-link-front/*.tsbuildinfo
 carbon-link-front/vite.config.js
 carbon-link-front/vite.config.d.ts
+user-agent/node_modules/
+user-agent/artifacts/
+user-agent/.env*
+!user-agent/.env.fuji.example
 uploads/
