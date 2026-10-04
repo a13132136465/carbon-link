@@ -28,7 +28,7 @@ export function EnterpriseModule({user,onLogout,notify}:{user:User;onLogout:()=>
       <Route path="/" element={<ApplicationPage user={user} notify={notify}/>}/>
       <Route path="/wallet" element={<div className="enterprise-page"><WalletPage notify={notify}/></div>}/>
       <Route path="/market" element={<div className="enterprise-page"><MarketPage user={user} notify={notify}/></div>}/>
-      <Route path="/retirements" element={<div className="enterprise-page"><RetirementsPage notify={notify}/></div>}/>
+      <Route path="/retirements" element={<div className="enterprise-page"><RetirementsPage user={user} notify={notify}/></div>}/>
       <Route path="/account" element={<div className="enterprise-page"><AccountPage user={user} notify={notify}/></div>}/>
       <Route path="*" element={<Navigate to="/"/>}/>
     </Routes></main>

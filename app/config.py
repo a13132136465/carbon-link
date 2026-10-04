@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     blockchain_worker_max_attempts: int = 10
     carbon_project_contract_address: str | None = None
     carbon_credit_contract_address: str | None = None
+    carbon_marketplace_contract_address: str | None = None
+    usdc_contract_address: str | None = None
     blockchain_operator_address: str | None = None
     blockchain_operator_private_key: str | None = None
     blockchain_signer_url: str | None = None
@@ -61,6 +63,8 @@ class Settings(BaseSettings):
             "BLOCKCHAIN_RPC_URL": self.blockchain_rpc_url,
             "CARBON_PROJECT_CONTRACT_ADDRESS": self.carbon_project_contract_address,
             "CARBON_CREDIT_CONTRACT_ADDRESS": self.carbon_credit_contract_address,
+            "CARBON_MARKETPLACE_CONTRACT_ADDRESS": self.carbon_marketplace_contract_address,
+            "USDC_CONTRACT_ADDRESS": self.usdc_contract_address,
             "BLOCKCHAIN_OPERATOR_ADDRESS": self.blockchain_operator_address,
         }
         missing = [name for name, value in required.items() if not value]

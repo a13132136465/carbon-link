@@ -27,6 +27,29 @@ class UserOut(ORMModel):
     role: Role
     is_active: bool
     created_at: datetime
+    wallet_address: str | None
+
+class WalletChallengeIn(BaseModel):
+    address: str = Field(min_length=42, max_length=42)
+
+class WalletChallengeOut(BaseModel):
+    address: str
+    message: str
+    expires_at: datetime
+
+class WalletLinkIn(BaseModel):
+    address: str = Field(min_length=42, max_length=42)
+    signature: str = Field(min_length=130, max_length=132)
+
+class ChainConfigOut(BaseModel):
+    enabled: bool
+    network: str
+    chain_id: int
+    confirmations: int
+    rpc_url: str | None
+    credit_contract_address: str | None
+    marketplace_contract_address: str | None
+    usdc_contract_address: str | None
 
 class ProjectIn(BaseModel):
     name: str = Field(min_length=2, max_length=200)
@@ -51,6 +74,7 @@ class ProjectOut(ORMModel):
     status: ProjectStatus
     review_note: str | None
     created_at: datetime
+    chain_token_id: int | None
 
 class ProjectDocumentOut(ORMModel):
     id: str
@@ -112,6 +136,7 @@ class BatchOut(ORMModel):
     total_issued: Decimal
     total_retired: Decimal
     issued_at: datetime
+    chain_batch_id: int | None
 
 class HoldingOut(ORMModel):
     batch_id: str
@@ -180,6 +205,15 @@ class RetirementOut(ORMModel):
     beneficiary: str
     reason: str
     retired_at: datetime
+    transaction_hash: str | None
+    chain_retirement_id: int | None
+
+class RetirementConfirmIn(BaseModel):
+    transaction_hash: str = Field(pattern="^0x[0-9a-fA-F]{64}$")
+    batch_id: str
+    quantity: Decimal = Field(gt=0, max_digits=20, decimal_places=4)
+    beneficiary: str = Field(min_length=2, max_length=200)
+    reason: str = Field(min_length=2, max_length=2000)
 
 class AuditEventOut(ORMModel):
     id: str
@@ -206,6 +240,8 @@ class BlockchainConfigOut(BaseModel):
     confirmations: int
     project_contract_address: str | None
     credit_contract_address: str | None
+    marketplace_contract_address: str | None
+    usdc_contract_address: str | None
     operator_address: str | None
     signing_mode: str
 

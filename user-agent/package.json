@@ -1,0 +1,22 @@
+{
+  "name": "carbon-link-user-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Batch browser user agent for CarbonLink acceptance testing",
+  "scripts": {
+    "agent": "node src/cli.mjs",
+    "smoke": "node src/cli.mjs --scenario application --count 1 --concurrency 1",
+    "test": "node --test",
+    "install-browser": "playwright install chromium"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "ethers": "^6.15.0",
+    "openai": "^6.7.0",
+    "playwright": "^1.55.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

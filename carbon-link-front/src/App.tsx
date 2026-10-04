@@ -59,7 +59,7 @@ function ManagementLayout({user,onLogout,notify}:{user:User;onLogout:()=>void;no
     </aside>
     <main className="workspace"><header className="topbar"><button className="menu-btn" onClick={()=>setOpen(true)}><Icon name="menu"/></button><div><span className="breadcrumb">CarbonLink / 管理控制台</span><h1>{title[location.pathname]||'管理控制台'}</h1></div><div className="top-actions"><span className="network"><i/>服务在线</span><div className="avatar small">{user.display_name.slice(0,1).toUpperCase()}</div></div></header>
       <div className="page"><Routes>
-        <Route path="/" element={<DashboardPage user={user}/>}/><Route path="/projects" element={<ProjectsPage user={user} notify={notify}/>}/><Route path="/wallet" element={<WalletPage notify={notify}/>}/><Route path="/market" element={<MarketPage user={user} notify={notify}/>}/><Route path="/retirements" element={<RetirementsPage notify={notify}/>}/>
+        <Route path="/" element={<DashboardPage user={user}/>}/><Route path="/projects" element={<ProjectsPage user={user} notify={notify}/>}/><Route path="/wallet" element={<WalletPage notify={notify}/>}/><Route path="/market" element={<MarketPage user={user} notify={notify}/>}/><Route path="/retirements" element={<RetirementsPage user={user} notify={notify}/>}/>
         <Route path="/users" element={admin?<UsersPage current={user} notify={notify}/>:<Navigate to="/"/>}/><Route path="/blockchain" element={admin?<BlockchainPage/>:<Navigate to="/"/>}/><Route path="/audit" element={admin?<AuditPage/>:<Navigate to="/"/>}/><Route path="/account" element={<AccountPage user={user} notify={notify}/>}/><Route path="*" element={<Navigate to="/"/>}/>
       </Routes></div>
     </main>
