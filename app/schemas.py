@@ -224,12 +224,20 @@ class AuditEventOut(ORMModel):
     detail: str
     created_at: datetime
 
+class DashboardListingOut(BaseModel):
+    id: str
+    batch_id: str
+    remaining_quantity: Decimal
+    unit_price: Decimal
+    created_at: datetime
+
 class DashboardOut(BaseModel):
     total_issued: Decimal
     total_retired: Decimal
     open_market_quantity: Decimal
     trade_volume: Decimal
     project_count: int
+    latest_market_listings: list[DashboardListingOut] = Field(default_factory=list)
 
 class BlockchainConfigOut(BaseModel):
     enabled: bool

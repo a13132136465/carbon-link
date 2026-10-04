@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react'
 import { downloadDocument, idempotencyKey, json, request, requestPage } from './api'
-import type { AuditEvent, Batch, BlockchainConfig, ChainOperation, Dashboard, Holding, Ledger, Listing, Project, ProjectDocument, Retirement, User } from './types'
+import type { AuditEvent, Batch, BlockchainConfig, ChainOperation, Dashboard, Holding, Ledger, Project, ProjectDocument, Retirement, User } from './types'
 import { date, Empty, fmt, Icon, Modal, Pagination, short, Status } from './ui'
 import { creditAmount, wallet } from './chain'
 import { keccak256, toUtf8Bytes } from 'ethers'
@@ -18,9 +18,9 @@ const Loader=()=> <div className="loading"><span/><span/><span/></div>
 const field=(form:FormData,name:string)=>String(form.get(name)||'')
 
 export function DashboardPage({user}:{user:User}){
-  const [stats,loading]=useLoad(()=>request<Dashboard>('/dashboard'),{total_issued:'0',total_retired:'0',open_market_quantity:'0',trade_volume:'0',project_count:0})
+  const [stats,loading]=useLoad(()=>request<Dashboard>('/dashboard'),{total_issued:'0',total_retired:'0',open_market_quantity:'0',trade_volume:'0',project_count:0,latest_market_listings:[]})
   const [projects]=useLoad(()=>request<Project[]>('/projects?limit=5'),[])
-  const [listings]=useLoad(()=>request<Listing[]>('/market/listings?limit=5'),[])
+  const listings=stats.latest_market_listings
   const retirementRate=Number(stats.total_issued)?Number(stats.total_retired)/Number(stats.total_issued)*100:0
   if(loading)return <Loader/>
   return <>

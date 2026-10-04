@@ -50,6 +50,9 @@ def test_full_registry_market_and_retirement_workflow(client):
     dashboard = client.get("/api/v1/dashboard", headers=admin).json()
     assert dashboard["total_issued"] == "100.0000"
     assert dashboard["total_retired"] == "10.0000"
+    assert dashboard["open_market_quantity"] == "15.0000"
+    assert dashboard["trade_volume"] == "25.0000"
+    assert dashboard["latest_market_listings"][0]["id"] == listing.json()["id"]
     chain_config = client.get("/api/v1/system/blockchain", headers=admin)
     assert chain_config.status_code == 200
     assert chain_config.json()["enabled"] is False

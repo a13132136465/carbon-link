@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from concurrent.futures import ThreadPoolExecutor
 import logging
 from pathlib import Path
 import secrets
@@ -38,7 +39,21 @@ CREDIT_READ_ABI = [
     {"type":"function","name":"balanceOf","stateMutability":"view","inputs":[{"name":"account","type":"address"},{"name":"id","type":"uint256"}],"outputs":[{"name":"","type":"uint256"}]},
     {"type":"event","name":"CreditRetired","anonymous":False,"inputs":[{"name":"retirementId","type":"uint256","indexed":True},{"name":"batchId","type":"uint256","indexed":True},{"name":"account","type":"address","indexed":True},{"name":"amount","type":"uint256","indexed":False},{"name":"beneficiaryHash","type":"bytes32","indexed":False},{"name":"evidenceDigest","type":"bytes32","indexed":False}]},
 ]
-MARKET_READ_ABI = [{"type":"function","name":"lockedBalance","stateMutability":"view","inputs":[{"name":"seller","type":"address"},{"name":"tokenId","type":"uint256"}],"outputs":[{"name":"","type":"uint256"}]}]
+MARKET_READ_ABI = [
+    {"type":"function","name":"lockedBalance","stateMutability":"view","inputs":[{"name":"seller","type":"address"},{"name":"tokenId","type":"uint256"}],"outputs":[{"name":"","type":"uint256"}]},
+    {"type":"function","name":"activeOrderCount","stateMutability":"view","inputs":[],"outputs":[{"name":"","type":"uint256"}]},
+    {"type":"function","name":"activeOrderIdAt","stateMutability":"view","inputs":[{"name":"index","type":"uint256"}],"outputs":[{"name":"","type":"uint256"}]},
+    {"type":"function","name":"orders","stateMutability":"view","inputs":[{"name":"","type":"uint256"}],"outputs":[
+        {"name":"maker","type":"address"},{"name":"tokenId","type":"uint256"},{"name":"remainingAmount","type":"uint256"},
+        {"name":"pricePerCredit","type":"uint256"},{"name":"remainingQuote","type":"uint256"},{"name":"side","type":"uint8"},
+        {"name":"active","type":"bool"},{"name":"createdAt","type":"uint64"}]},
+    {"type":"function","name":"tradeCount","stateMutability":"view","inputs":[],"outputs":[{"name":"","type":"uint256"}]},
+    {"type":"function","name":"tradeAt","stateMutability":"view","inputs":[{"name":"index","type":"uint256"}],"outputs":[{"name":"","type":"tuple","components":[
+        {"name":"orderId","type":"uint256"},{"name":"buyer","type":"address"},{"name":"seller","type":"address"},
+        {"name":"tokenId","type":"uint256"},{"name":"amount","type":"uint256"},{"name":"quoteAmount","type":"uint256"},
+        {"name":"pricePerCredit","type":"uint256"},{"name":"takerSide","type":"uint8"},{"name":"timestamp","type":"uint64"}]}]},
+]
+USDC_SCALE = Decimal("1000000")
 
 def total_header(response: Response, total: int) -> None:
     response.headers["X-Total-Count"] = str(total)
@@ -529,7 +544,71 @@ def retirements(response: Response, offset: int = Query(0, ge=0), limit: int = Q
 @router.get("/dashboard", response_model=DashboardOut)
 def dashboard(_: User = Depends(current_user), db: Session = Depends(get_db)):
     scalar = lambda stmt: db.scalar(stmt) or Decimal("0")
-    return DashboardOut(total_issued=scalar(select(func.sum(CreditBatch.total_issued))), total_retired=scalar(select(func.sum(CreditBatch.total_retired))), open_market_quantity=scalar(select(func.sum(Listing.remaining_quantity)).where(Listing.status == ListingStatus.OPEN)), trade_volume=scalar(select(func.sum(Trade.quantity))), project_count=int(db.scalar(select(func.count(Project.id))) or 0))
+    if settings.blockchain_enabled:
+        open_market_quantity, trade_volume, latest = chain_market_dashboard(db)
+    else:
+        open_filter = Listing.status == ListingStatus.OPEN
+        open_market_quantity = scalar(select(func.sum(Listing.remaining_quantity)).where(open_filter))
+        trade_volume = scalar(select(func.sum(Trade.quantity)))
+        rows = db.scalars(select(Listing).where(open_filter).order_by(Listing.created_at.desc()).limit(4))
+        latest = [{
+            "id": row.id,
+            "batch_id": row.batch_id,
+            "remaining_quantity": row.remaining_quantity,
+            "unit_price": row.unit_price,
+            "created_at": row.created_at,
+        } for row in rows]
+    return DashboardOut(
+        total_issued=scalar(select(func.sum(CreditBatch.total_issued))),
+        total_retired=scalar(select(func.sum(CreditBatch.total_retired))),
+        open_market_quantity=open_market_quantity,
+        trade_volume=trade_volume,
+        project_count=int(db.scalar(select(func.count(Project.id))) or 0),
+        latest_market_listings=latest,
+    )
+
+def chain_market_dashboard(db: Session) -> tuple[Decimal, Decimal, list[dict]]:
+    w3 = Web3(HTTPProvider(settings.blockchain_rpc_url, request_kwargs={"timeout": settings.blockchain_request_timeout_seconds}))
+    market = w3.eth.contract(address=Web3.to_checksum_address(settings.carbon_marketplace_contract_address), abi=MARKET_READ_ABI)
+    batch_ids = {batch.chain_batch_id: batch.id for batch in db.scalars(select(CreditBatch).where(CreditBatch.chain_batch_id.is_not(None)))}
+    return summarize_chain_market(batch_ids, market)
+
+def summarize_chain_market(batch_ids: dict[int, str], market) -> tuple[Decimal, Decimal, list[dict]]:
+    order_count = market.functions.activeOrderCount().call()
+    trade_count = market.functions.tradeCount().call()
+    order_ids = call_contracts([market.functions.activeOrderIdAt(index) for index in range(order_count)])
+    orders = call_contracts([market.functions.orders(order_id) for order_id in order_ids])
+    sell_orders = []
+    for order_id, order in zip(order_ids, orders):
+        if order[6] and order[5] == 1:
+            sell_orders.append((order_id, order))
+
+    latest = []
+    for order_id, order in sorted(sell_orders, key=lambda item: item[1][7], reverse=True):
+        batch_id = batch_ids.get(order[1])
+        if batch_id is None:
+            logger.warning("Ignoring market order %s for unknown chain batch %s", order_id, order[1])
+            continue
+        latest.append({
+            "id": str(order_id),
+            "batch_id": batch_id,
+            "remaining_quantity": Decimal(order[2]) / SCALE,
+            "unit_price": Decimal(order[3]) / USDC_SCALE,
+            "created_at": datetime.fromtimestamp(order[7], timezone.utc),
+        })
+        if len(latest) == 4:
+            break
+
+    trades = call_contracts([market.functions.tradeAt(index) for index in range(trade_count)])
+    trade_volume = sum((Decimal(trade[4]) / SCALE for trade in trades), Decimal("0"))
+    open_market_quantity = sum((Decimal(order[2]) / SCALE for _, order in sell_orders), Decimal("0"))
+    return open_market_quantity, trade_volume, latest
+
+def call_contracts(functions: list) -> list:
+    if not functions:
+        return []
+    with ThreadPoolExecutor(max_workers=min(12, len(functions))) as executor:
+        return list(executor.map(lambda function: function.call(), functions))
 
 @router.get("/system/blockchain", response_model=BlockchainConfigOut)
 def blockchain_config(_: User = Depends(require_roles(Role.ADMIN))):
